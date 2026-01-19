@@ -1,37 +1,55 @@
-# .github/workflows/scraper.yml
-
-name: Scraper
+name: EnglishElm Shopify Scraper
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 3 * * *"
 
 jobs:
-  run:
+  scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    strategy:
+      fail-fast: false
+      matrix:
+        batch: [
+          1, 2, 3, 4, 5,
+          6, 7, 8, 9, 10,
+          11, 12, 13, 14, 15,
+          16, 17, 18, 19, 20,
+          21, 22, 23, 24, 25,
+          26, 27, 28, 29, 30
+        ]
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup PHP
+      - name: Setup PHP 7.4
         uses: shivammathur/setup-php@v2
         with:
-          php-version: "8.1"
-          extensions: ftp, simplexml
-          ini-values: memory_limit=1024M, max_execution_time=0
+          php-version: '7.4'
+          extensions: curl, ftp
+          ini-values: memory_limit=2048M
 
-      - name: Run scraper
+      - name: Calculate batch offset
+        run: |
+          echo "BATCH_START=$(( (${{ matrix.batch }} - 1) * 5000 ))" >> $GITHUB_ENV
+
+      - name: Run scraper (batch ${{ matrix.batch }})
         env:
+          CURR_URL: ${{ secrets.CURR_URL }}
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
           FTP_BASE_DIR: ${{ secrets.FTP_OUTPUT_PATH }}
-          CURR_URL: ${{ secrets.CURR_URL }}
-        run: php scraper.php
+          BATCH_ID: ${{ matrix.batch }}
+          BATCH_SIZE: 5000
+          CONCURRENCY: 15
+        run: |
+          php scraper.php
 
       - name: Upload CSV artifact
         uses: actions/upload-artifact@v4
         with:
-          name: products_full
-          path: products_full.csv
+          name: products_part_${{ matrix.batch }}
+          path: products_part_${{ matrix.batch }}.csv
