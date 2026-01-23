@@ -47,7 +47,7 @@ def http_get(url: str, is_json: bool = False) -> Optional[str]:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
+            # "Accept-Encoding": "gzip, deflate, br",
             "Referer": f"{CURR_URL}/",
             "X-Requested-With": "XMLHttpRequest",
             "Connection": "keep-alive",
@@ -55,7 +55,7 @@ def http_get(url: str, is_json: bool = False) -> Optional[str]:
     else:
         # Minimal headers for sitemap requests
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            # "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
     
