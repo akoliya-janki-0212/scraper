@@ -47,7 +47,7 @@ def http_get(url: str, is_json: bool = False) -> Optional[str]:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "en-US,en;q=0.9",
-            # "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": "gzip, deflate, br",
             "Referer": f"{CURR_URL}/",
             "X-Requested-With": "XMLHttpRequest",
             "Connection": "keep-alive",
@@ -55,7 +55,7 @@ def http_get(url: str, is_json: bool = False) -> Optional[str]:
     else:
         # Minimal headers for sitemap requests
         headers = {
-            # "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         }
     
@@ -85,6 +85,7 @@ def fetch_json(url: str) -> Optional[dict]:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/javascript, */*; q=0.01",
             "Accept-Language": "en-US,en;q=0.9",
+            # "Accept-Encoding": "gzip, deflate, br",
             "Referer": f"{CURR_URL}/",
             "X-Requested-With": "XMLHttpRequest",
             "Connection": "keep-alive",
@@ -94,6 +95,8 @@ def fetch_json(url: str) -> Optional[dict]:
         }
         
         r = session.get(url, headers=headers, timeout=15, verify=True)
+        # print(url);
+        # print(r.content);
         if r.status_code == 200:
             return r.json()
         else:
@@ -173,6 +176,8 @@ def normalize_image_url(url: str) -> str:
         return f"https://ak1.ostkcdn.com{url}" if 'ostkcdn.com' not in url else f"https://{url}"
     
     return url
+
+from typing import Dict
 
 def extract_overstock_data(product_data: dict) -> Dict:
     """
@@ -268,6 +273,7 @@ def extract_overstock_data(product_data: dict) -> Dict:
             'group_attr_1': group_attr_1,
             'group_attr_2': group_attr_2
         }
+
     except Exception as e:
         log(f"Error extracting Overstock data: {e}", "ERROR")
         return {}
@@ -291,6 +297,8 @@ def process_product_data(product_url: str, writer, seen: set, stats: dict):
     # Try multiple possible API endpoints
     api_endpoints = [
         f"https://www.overstock.com/api/product/{product_id}",
+        # f"https://www.overstock.com/api/products/{product_id}",
+        # f"https://www.overstock.com/api/catalog/product/{product_id}",
     ]
     
     data = None
@@ -329,9 +337,8 @@ def process_product_data(product_url: str, writer, seen: set, stats: dict):
     
     try:
         # Prepare row data
-        variation_param = f"?option={product_info['variation_id']}" if product_info['variation_id'] else ""
         row = [
-            product_url + variation_param,
+            product_url + "?option=" + str(product_info['variation_id']),
             product_info['product_id'],  # Ref Product ID
             product_info['variation_id'],  # Ref Varient ID
             product_info['category'],  # Ref Category
@@ -354,8 +361,7 @@ def process_product_data(product_url: str, writer, seen: set, stats: dict):
             writer.writerow(row)
         
         stats['products_fetched'] += 1
-        name_preview = product_info['name'][:50] + "..." if len(product_info['name']) > 50 else product_info['name']
-        log(f"Fetched product {product_info['product_id']}: {name_preview}", "INFO")
+        log(f"Fetched product {product_info['product_id']}: {product_info['name'][:50]}...", "INFO")
         
     except Exception as e:
         log(f"Error creating row for product {product_id}: {e}", "ERROR")
@@ -399,9 +405,10 @@ def main():
             sitemaps = [e.text.strip() for e in elements if e.text]
             break
     
-    # If still no sitemaps, use defaults
+    # If still no sitemaps, try regex
     if not sitemaps:
-        log("No sitemaps found with XML parsing, using defaults", "WARNING")
+        log("No sitemaps found with XML parsing, trying regex", "WARNING")
+        # Try common Overstock sitemap patterns
         sitemaps = [
             "https://www.overstock.com/sitemap_products_1.xml",
             "https://www.overstock.com/sitemap_products_2.xml",
