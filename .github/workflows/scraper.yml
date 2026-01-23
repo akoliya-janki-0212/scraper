@@ -1,4 +1,4 @@
-name: Parallel Sitemap Scraper
+name: Parallel Sitemap Scraper(PHP - v.0)
 
 on:
   workflow_dispatch:
