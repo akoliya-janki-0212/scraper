@@ -1,1 +1,5 @@
 .env
+other/*
+*.csv
+path/
+google-shopping/
