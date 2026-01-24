@@ -1,0 +1,12 @@
+[
+  {
+    "product_id": 1,
+    "url": "https://www.google.com/search?q=office+chair&tbm=shop&gl=US&hl=en",
+    "keyword": "office chair"
+  },
+  {
+    "product_id": 2,
+    "url": "https://www.google.com/search?q=wireless+headphones&tbm=shop&gl=US&hl=en",
+    "keyword": "wireless headphones"
+  }
+]
