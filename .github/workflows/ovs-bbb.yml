@@ -204,38 +204,29 @@ jobs:
           echo "Generated filename: ${SITE_NAME}_${DATE}.csv"
 
       - name: Upload to FTP
+        run: |
+          if [ -z "$FTP_HOST" ] || [ -z "$FTP_USER" ] || [ -z "$FTP_PASS" ]; then
+            echo "FTP credentials not configured. Skipping FTP upload."
+            exit 0
+          fi
+
+          sudo apt-get update && sudo apt-get install -y lftp
+
+          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
+          set ftp:ssl-allow no
+          set cmd:fail-exit yes
+          cd $FTP_BASE_DIR
+          put products_full.csv -o $FILE
+          bye
+          EOF
+
+          echo "Upload completed: $FILE"
         env:
           FTP_HOST: ${{ secrets.FTP_HOST }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
           FTP_BASE_DIR: ${{ secrets.FTP_OUTPUT_PATH }}
           FILE: ${{ steps.meta.outputs.name }}
-        run: |
-          if [ -z "$FTP_HOST" ] || [ -z "$FTP_USER" ] || [ -z "$FTP_PASS" ]; then
-            echo "FTP credentials not configured. Skipping FTP upload."
-            echo "To enable FTP upload, configure secrets: FTP_HOST, FTP_USER, FTP_PASS, FTP_OUTPUT_PATH"
-            exit 0
-          fi
-          
-          echo "Installing lftp..."
-          sudo apt-get update && sudo apt-get install -y lftp
-          
-          echo "Uploading $FILE to FTP..."
-          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
-          set ftp:ssl-allow no
-          mkdir -p $FTP_BASE_DIR
-          cd $FTP_BASE_DIR
-          put products_full.csv -o $FILE
-          bye
-          EOF
-          
-          UPLOAD_STATUS=$?
-          if [ $UPLOAD_STATUS -eq 0 ]; then
-            echo "Upload completed: $FILE"
-          else:
-            echo "Upload failed with status: $UPLOAD_STATUS"
-            exit $UPLOAD_STATUS
-          fi
 
       - name: Create summary report
         run: |
