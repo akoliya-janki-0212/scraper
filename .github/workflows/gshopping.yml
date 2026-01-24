@@ -2,15 +2,19 @@ name: Google Shopping Scraper
 
 on:
   schedule:
-    # Run daily at 2 AM UTC
-    - cron: '0 2 * * *'
+    # Run every 6 hours
+    - cron: '0 */6 * * *'
   workflow_dispatch:  # Allow manual triggering
   push:
-    branches: [ main master ]
+    branches: [ main, master ]
+    paths:
+      - 'gshopping/**'
+      - '.github/workflows/shopping-scraper.yml'
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     steps:
     - name: Checkout repository
@@ -20,53 +24,146 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+        cache: 'pip'
         
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget unzip
-        # Install Chrome
-        wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
-        echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+        sudo apt-get install -y \
+          wget \
+          gnupg \
+          unzip \
+          curl \
+          jq
+        
+        # Install Google Chrome
+        wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
         
+        # Verify Chrome installation
+        google-chrome --version
+        
+    - name: Install ChromeDriver
+      run: |
+        # Get Chrome version
+        CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+\.\d+' | head -1)
+        CHROME_MAJOR_VERSION=$(echo $CHROME_VERSION | cut -d'.' -f1)
+        echo "Chrome Version: $CHROME_VERSION"
+        echo "Chrome Major Version: $CHROME_MAJOR_VERSION"
+        
+        # Get matching ChromeDriver version
+        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_MAJOR_VERSION")
+        echo "Downloading ChromeDriver version: $CHROMEDRIVER_VERSION"
+        
+        # Download and install ChromeDriver
+        wget -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip"
+        unzip -q chromedriver_linux64.zip
+        sudo mv chromedriver /usr/local/bin/
+        sudo chmod +x /usr/local/bin/chromedriver
+        
+        # Verify ChromeDriver
+        chromedriver --version
+        
     - name: Install Python dependencies
       run: |
+        cd gshopping
         python -m pip install --upgrade pip
-        pip install -r gshopping/requirements.txt
+        pip install -r requirements.txt
         
-    - name: Create product URLs file
+    - name: Create product URLs if missing
       run: |
-        cat > product_urls.json << 'EOF'
-        [
-          {
-            "product_id": 1,
-            "url": "https://www.google.com/search?q=Glory+Furniture+G3150+Twin+Low+Profile+Storage+Bed&udm=28&gl=US&hl=en&pws=0",
-            "keyword": "Glory Furniture G3150 Twin Low Profile Storage Bed"
-          },
-          {
-            "product_id": 2,
-            "url": "https://www.google.com/search?q=Acme+Louis+Phillipe+III+Twin+Sleigh+Bed&udm=28&gl=US&hl=en&pws=0",
-            "keyword": "Acme Louis Phillipe III Twin Sleigh Bed"
-          }
-        ]
-        EOF
+        cd gshopping
+        if [ ! -f "product_urls.json" ]; then
+          echo "Creating sample product_urls.json..."
+          cat > product_urls.json << 'EOF'
+          [
+            {
+              "product_id": 1,
+              "url": "https://www.google.com/search?q=office+chair&tbm=shop&gl=US&hl=en",
+              "keyword": "office chair"
+            },
+            {
+              "product_id": 2,
+              "url": "https://www.google.com/search?q=wireless+headphones&tbm=shop&gl=US&hl=en",
+              "keyword": "wireless headphones"
+            },
+            {
+              "product_id": 3,
+              "url": "https://www.google.com/search?q=laptop&tbm=shop&gl=US&hl=en",
+              "keyword": "laptop"
+            }
+          ]
+          EOF
+        fi
         
-    - name: Run scraper
-      run: python gshopping/gscrapperci.py
-      
+    - name: Run Google Shopping Scraper
+      run: |
+        cd gshopping
+        echo "Starting scraper..."
+        python gscrapperci.py
+        
+    - name: Display results summary
+      run: |
+        cd gshopping
+        echo "=== Scraping Results ==="
+        if [ -d "scraping_results" ]; then
+          echo "Files generated:"
+          ls -la scraping_results/
+          
+          if [ -f "scraping_results/summary.json" ]; then
+            echo -e "\nSummary:"
+            cat scraping_results/summary.json | jq '.metadata'
+            echo -e "\nSuccess rate:"
+            cat scraping_results/summary.json | jq '.products | map(select(.status | test("found|success"))) | length' || true
+          fi
+        else
+          echo "No scraping_results directory found"
+        fi
+        
     - name: Upload results as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: scraping-results
-        path: scraping_results/
+        name: google-shopping-results
+        path: gshopping/scraping_results/
+        retention-days: 7
         if-no-files-found: warn
         
-    - name: Commit and push results
+    - name: Deploy results to GitHub Pages (Optional)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        git add scraping_results/
-        git commit -m "Update scraping results [skip ci]" || echo "No changes to commit"
-        git push origin HEAD:${GITHUB_REF##*/}
+        cd gshopping
+        mkdir -p ../public
+        if [ -d "scraping_results" ]; then
+          cp -r scraping_results/* ../public/
+          echo "Results copied to public directory for GitHub Pages"
+        fi
+        
+    - name: Create summary report
+      run: |
+        cd gshopping
+        echo "# Google Shopping Scraper Results" > results_summary.md
+        echo "Generated: $(date)" >> results_summary.md
+        echo "" >> results_summary.md
+        
+        if [ -d "scraping_results" ]; then
+          echo "## Generated Files" >> results_summary.md
+          echo "\`\`\`" >> results_summary.md
+          ls -la scraping_results/ >> results_summary.md
+          echo "\`\`\`" >> results_summary.md
+          
+          if [ -f "scraping_results/all_products.csv" ]; then
+            echo "## Products Scraped" >> results_summary.md
+            echo "\`\`\`csv" >> results_summary.md
+            head -5 scraping_results/all_products.csv >> results_summary.md
+            echo "\`\`\`" >> results_summary.md
+            echo "*Total rows: $(wc -l < scraping_results/all_products.csv)*" >> results_summary.md
+          fi
+        fi
+        
+    - name: Upload summary report
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraper-summary
+        path: gshopping/results_summary.md
