@@ -4,3 +4,6 @@ other/*
 path/
 google-shopping/
 *.png
+/venv/*
+*.json
+__pycache__/
