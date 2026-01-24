@@ -523,6 +523,7 @@ def main():
     driver.quit()
 
 if __name__ == "__main__":
+    IS_CI = os.getenv("GITHUB_ACTIONS") == "true"
     print("Google Shopping Scraper - CSV Output Version")
     print("=" * 60)
     print("This script will:")
@@ -549,7 +550,9 @@ if __name__ == "__main__":
         with open('product_urls.json', 'w') as f:
             json.dump(sample_data, f, indent=2)
         print("Sample product_urls.json created. Please edit with your actual URLs.")
-        print("Press Enter to continue with sample data, or Ctrl+C to exit and edit the file.")
-        input()
+        if IS_CI:
+            print("CI detected — continuing automatically")
+        else:
+            input("Press Enter to continue with sample data, or Ctrl+C to exit: ")
     
     main()
