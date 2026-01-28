@@ -19,7 +19,7 @@ import argparse
 
 # Import the existing captcha solving functions
 try:
-    from solvecaptcha import solve_recaptcha_audio
+    from .solvecaptcha import solve_recaptcha_audio
 except ImportError:
     # If solvecaptcha is not in same directory, try to import from current directory
     import importlib.util
@@ -29,7 +29,7 @@ except ImportError:
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     
     try:
-        from solvecaptcha import solve_recaptcha_audio
+        from .solvecaptcha import solve_recaptcha_audio
     except ImportError:
         print("Warning: solvecaptcha module not found. Captcha solving will be disabled.")
         
