@@ -56,8 +56,16 @@ jobs:
             google-chrome-stable \
             chromium-chromedriver \
             xvfb \
-            lftp
-
+            lftp \ 
+            ffmpeg \
+            libasound2 \
+            libatk-bridge2.0-0 \
+            libgtk-3-0 \
+            libnss3 \
+            libxss1 \
+            libgbm1 \
+            libu2f-udev \
+            fonts-liberation
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -69,8 +77,9 @@ jobs:
             requests==2.31.0 \
             lxml==4.9.3 \
             fake-useragent==1.4.0 \
-            python-dateutil==2.8.2
-
+            python-dateutil==2.8.2 \
+            pydub \
+            SpeechRecognition
       - name: Run scraper
         env:
           DISPLAY: :99
