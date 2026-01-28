@@ -56,7 +56,7 @@ jobs:
             google-chrome-stable \
             chromium-chromedriver \
             xvfb \
-            lftp \ 
+            lftp \
             ffmpeg \
             libasound2 \
             libatk-bridge2.0-0 \
