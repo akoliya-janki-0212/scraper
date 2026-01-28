@@ -87,7 +87,7 @@ jobs:
           INPUT_FILE="${{ github.event.inputs.input_filename || 'google_shopping.csv' }}"
           TOTAL_CHUNKS="${{ github.event.inputs.total_chunks || 4 }}"
 
-          python -m gshopping.gscrapperci \
+          python gshopping/gscrapperci.py \
             --chunk-id ${{ matrix.chunk_id }} \
             --total-chunks $TOTAL_CHUNKS \
             --input-file "$INPUT_FILE"
