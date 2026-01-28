@@ -122,33 +122,50 @@ def solve_recaptcha_audio(driver):
 
         # ✅ Get the audio file URL
         def get_audio(driver):
-            time.sleep(2)
-            try:
-                audio_source = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "audio-source"))
-                )
-                src = audio_source.get_attribute("src")  # Get direct MP3 URL
-                print(f"[INFO] Audio source URL: {src}")
-            except:
-                print("❌ Could not find the audio source.")
-                driver.switch_to.default_content()
-                return "no audio"
+            time.sleep(3)  # Increased wait time
+
+            # Try multiple times to find audio source
+            max_attempts = 3
+            for attempt in range(max_attempts):
+                try:
+                    print(f"Attempt {attempt + 1} to find audio source...")
+
+                    # Check if audio source is present
+                    audio_source = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.ID, "audio-source"))
+                    )
+                    src = audio_source.get_attribute("src")
+
+                    if src and src.startswith("http"):
+                        print(f"✅ Audio source found: {src[:50]}...")
+                        break
+                    else:
+                        print("Audio source found but URL is invalid")
+                        time.sleep(2)
+                except:
+                    if attempt < max_attempts - 1:
+                        print("Audio source not found, retrying...")
+                        time.sleep(2)
+                    else:
+                        print("❌ Could not find the audio source after multiple attempts.")
+                        return "no audio"
+
+            # Rest of your audio processing code remains the same...
             # ✅ Define file paths
             mp3_path = os.path.join(os.getcwd(), "captcha_audio.mp3")
             wav_path = os.path.join(os.getcwd(), "captcha_audio.wav")
 
-            # ✅ Download the audio file
-            urllib.request.urlretrieve(src, mp3_path)
-            print("✅ Audio file downloaded.")
-
-            # ✅ Convert MP3 to WAV
             try:
+                # ✅ Download the audio file
+                urllib.request.urlretrieve(src, mp3_path)
+                print("✅ Audio file downloaded.")
+
+                # ✅ Convert MP3 to WAV
                 sound = pydub.AudioSegment.from_mp3(mp3_path)
                 sound.export(wav_path, format="wav")
                 print("✅ Audio file converted to WAV.")
             except Exception as e:
-                print(f"❌ Audio conversion error: {e}")
-                driver.switch_to.default_content()
+                print(f"❌ Audio processing error: {e}")
                 return "quit"
 
             # ✅ Call voicereco() to process the audio file
@@ -166,16 +183,27 @@ def solve_recaptcha_audio(driver):
                 time.sleep(1)
                 response_box.send_keys(Keys.ENTER)
                 time.sleep(random.uniform(2, 3))
+
+                # Check if verification failed
+                try:
+                    error_msg = driver.find_element(By.XPATH, "//div[contains(text(), 'Try again')]")
+                    if error_msg:
+                        print("⚠️ Verification failed, trying again...")
+                        return "retry"
+                except:
+                    pass
+
+                return "success"
             else:
                 print("❌ Could not extract text from the audio.")
                 return "quit"
         def submit(driver):
-                # ✅ Click the Submit Button
-                driver.switch_to.default_content()
-                driver.find_element(By.ID, "recaptcha-demo-submit").click()
-                print("🎉 CAPTCHA Solved!")
-                return "solved"
-            
+            # ✅ Click the Submit Button
+            driver.switch_to.default_content()
+            driver.find_element(By.ID, "recaptcha-demo-submit").click()
+            print("🎉 CAPTCHA Solved!")
+            return "solved"
+
         count=1
         while True:
             result=get_audio(driver)
@@ -739,22 +767,22 @@ def process_chunk(chunk_file, chunk_id, total_chunks):
         csv1_data = []
         for result in product_results:
             csv1_row = {
-                'product_id': result['product_id'],
-                'web_id': result['web_id'],
-                'keyword': result['keyword'],
-                'url': result['url'],
-                'osb_url': result['osb_url'],
-                'last_response': result['last_response'],
-                'product_url': result['product_url'],
-                'seller': result['seller'],
-                'product_name': result['product_name'],
-                'cid': result['cid'],
-                'pid': result['pid'],
-                'last_fetched_date': result['last_fetched_date'],
-                'osb_position': result['osb_position'],
-                'osb_id': result['osb_id'],
-                'seller_count': result['seller_count'],
-                'status': result['status']
+                'product_id': result.get('product_id'),
+                'web_id': result.get('web_id'),
+                'keyword': result.get('keyword'),
+                'url': result.get('url'),
+                'osb_url': result.get('osb_url'),
+                'last_response': result.get('last_response'),
+                'product_url': result.get('product_url', ''),   # ✅ FIX
+                'seller': result.get('seller', ''),
+                'product_name': result.get('product_name', ''),
+                'cid': result.get('cid', ''),
+                'pid': result.get('pid', ''),
+                'last_fetched_date': result.get('last_fetched_date'),
+                'osb_position': result.get('osb_position', 0),
+                'osb_id': result.get('osb_id', ''),
+                'seller_count': result.get('seller_count', 0),
+                'status': result.get('status')
             }
             csv1_data.append(csv1_row)
         
@@ -762,12 +790,12 @@ def process_chunk(chunk_file, chunk_id, total_chunks):
         csv2_data = []
         for seller in seller_results:
             csv2_row = {
-                'product_id': seller['product_id'],
-                'seller': seller['seller'],
-                'seller_product_name': seller['seller_product_name'],
-                'seller_url': seller['seller_url'],
-                'seller_price': seller['seller_price'],
-                'last_fetched_date': seller['last_fetched_date']
+                'product_id': seller.get('product_id'),
+                'seller': seller.get('seller',''),
+                'seller_product_name': seller.get('seller_product_name',''),
+                'seller_url': seller.get('seller_url',''),
+                'seller_price': seller.get('seller_price',0),
+                'last_fetched_date': seller.get('last_fetched_date','')
             }
             csv2_data.append(csv2_row)
         
