@@ -1,4 +1,4 @@
-name: Google Shopping Scraper with Audio Captcha
+name: Google Shopping Scraper
 
 on:
   workflow_dispatch:
@@ -36,7 +36,6 @@ jobs:
   scrape:
     needs: plan
     runs-on: ubuntu-22.04
-    timeout-minutes: 120  # Increased timeout for captcha solving
 
     strategy:
       fail-fast: false
@@ -48,38 +47,26 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
-      - name: Install system dependencies with audio support
+      - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            wget \
-            gnupg \
             google-chrome-stable \
+            chromium-chromedriver \
             xvfb \
-            pulseaudio \
+            lftp \
             ffmpeg \
             libasound2 \
-            libasound2-dev \
             libatk-bridge2.0-0 \
             libgtk-3-0 \
             libnss3 \
             libxss1 \
             libgbm1 \
             libu2f-udev \
-            fonts-liberation \
-            libpulse-dev \
-            portaudio19-dev \
-            libjack-dev \
-            lftp
-
-          # Setup virtual audio devices
-          pulseaudio --start
-          pactl load-module module-null-sink sink_name=virtual_speaker
-          pactl load-module module-virtual-source source_name=virtual_mic
-
-      - name: Install Python dependencies for audio captcha
+            fonts-liberation
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install \
@@ -91,62 +78,27 @@ jobs:
             lxml==4.9.3 \
             fake-useragent==1.4.0 \
             python-dateutil==2.8.2 \
-            pydub==0.25.1 \
-            SpeechRecognition==3.10.0 \
-            ftplib==0.8.0 \
-            python-dotenv==1.0.0
-      - name: Setup virtual display and audio environment
-        run: |
-          # Start Xvfb for headless display
-          Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
-          export DISPLAY=:99
-          
-          # Setup pulseaudio for virtual audio
-          pulseaudio --start --exit-idle-time=-1
-          pactl load-module module-null-sink sink_name=virtual_speaker
-          pactl load-module module-virtual-source source_name=virtual_mic
-          
-          echo "✅ Virtual display and audio environment ready"
-
-      - name: Run Google Shopping Scraper with Audio Captcha
+            pydub \
+            SpeechRecognition
+      - name: Run scraper
         env:
           DISPLAY: :99
           FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_PORT: ${{ secrets.FTP_PORT }}
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
           FTP_PATH: ${{ secrets.FTP_PATH }}
-          FTP_PORT: ${{ secrets.FTP_PORT || '21' }}
-          PULSE_SERVER: localhost
-          PULSE_SOURCE: virtual_mic
-          PULSE_SINK: virtual_speaker
         run: |
-          echo "🚀 Starting Google Shopping Scraper with Audio Captcha Support"
-          echo "=============================================================="
-          echo "Chunk ID: ${{ matrix.chunk_id }} of ${{ github.event.inputs.total_chunks || 4 }}"
-          echo "Input file: ${{ github.event.inputs.input_filename || 'google_shopping.csv' }}"
-          echo "Audio captcha solving: ENABLED"
-          echo "=============================================================="
-          # Set environment variables for audio
-          export DISPLAY=:99
-          export PULSE_SERVER=localhost
-          export PULSE_SOURCE=virtual_mic
-          export PULSE_SINK=virtual_speaker
-          
-          # Create output directory
-          mkdir -p output
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 3
 
-          # Check results
-          echo " ready script:"
-          # Run the scraper
+          INPUT_FILE="${{ github.event.inputs.input_filename || 'google_shopping.csv' }}"
+          TOTAL_CHUNKS="${{ github.event.inputs.total_chunks || 4 }}"
+
           python gshopping/gscrappercitest.py \
             --chunk-id ${{ matrix.chunk_id }} \
-            --total-chunks ${{ github.event.inputs.total_chunks || 4 }} \
-            --input-file "${{ github.event.inputs.input_filename || 'google_shopping.csv' }}"
-          
-          # Check results
-          echo "📊 Results summary:"
-          ls -la output/*.csv 2>/dev/null || echo "No CSV files generated"
-          echo "=============================================================="
+            --total-chunks $TOTAL_CHUNKS \
+            --input-file "$INPUT_FILE"
 
       - name: Upload chunk results
         if: always()
@@ -156,24 +108,16 @@ jobs:
           path: output/
           retention-days: 1
 
-      - name: Cleanup temporary audio files
-        if: always()
-        run: |
-          echo "🧹 Cleaning up temporary audio files..."
-          rm -f *.mp3 *.wav *.png 2>/dev/null || true
-          echo "Cleanup complete!"
-
   merge:
     needs: scrape
     runs-on: ubuntu-latest
-    if: always()
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.10"
 
       - name: Install pandas
         run: |
@@ -184,70 +128,39 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: chunks
-          pattern: chunk-*
-          merge-multiple: true
 
       - name: Merge CSV files
         run: |
-          echo "🔄 Merging CSV files from all chunks..."
-          
-          # Create merge script
-          cat > merge_results.py << 'EOF'
-          import os
-          import glob
-          import pandas as pd
-          from datetime import datetime
-          
-          def merge_csv_files(pattern, output_prefix):
-              files = glob.glob(pattern)
-              if not files:
-                  print(f"⚠️ No files found for pattern: {pattern}")
-                  return None
-              
-              print(f"Found {len(files)} files for {output_prefix}")
-              
-              # Read and merge all CSV files
-              dfs = []
-              for file in files:
-                  try:
-                      df = pd.read_csv(file)
-                      dfs.append(df)
-                      print(f"✓ Read {len(df)} rows from {os.path.basename(file)}")
-                  except Exception as e:
-                      print(f"✗ Error reading {file}: {e}")
-              
-              if not dfs:
-                  print("⚠️ No data to merge")
-                  return None
-              
-              # Merge all dataframes
-              merged_df = pd.concat(dfs, ignore_index=True)
-              
-              # Generate timestamp
-              timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-              output_file = f"{output_prefix}_{timestamp}.csv"
-              
-              # Save merged file
-              merged_df.to_csv(output_file, index=False)
-              print(f"✅ Saved {len(merged_df)} rows to {output_file}")
-              
-              return output_file
-          
-          # Merge product files
-          print("Merging product files...")
-          product_files = merge_csv_files("chunks/**/*product*.csv", "merged_products")
-          
-          # Merge seller files  
-          print("Merging seller files...")
-          seller_files = merge_csv_files("chunks/**/*seller*.csv", "merged_sellers")
-          
-          # Check if any files were created
-          if not product_files and not seller_files:
-              print("❌ No CSV files were merged. Check if scraper generated any output.")
-              exit(1)
-          EOF
-          
-          python merge_results.py
+            cat > merge_results.py <<EOF
+            import os
+            import pandas as pd
+            from datetime import datetime
+
+            product_files = []
+            seller_files = []
+
+            for root, _, files in os.walk("chunks"):
+                for f in files:
+                    path = os.path.join(root, f)
+                    if f.endswith(".csv") and "product" in f:
+                        product_files.append(path)
+                    elif f.endswith(".csv") and "seller" in f:
+                        seller_files.append(path)
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            if product_files:
+                df = pd.concat((pd.read_csv(f) for f in product_files), ignore_index=True)
+                df.sort_values("product_id", inplace=True)
+                df.to_csv(f"merged_products_{ts}.csv", index=False)
+
+            if seller_files:
+                df = pd.concat((pd.read_csv(f) for f in seller_files), ignore_index=True)
+                df.sort_values(["product_id", "seller"], inplace=True)
+                df.to_csv(f"merged_sellers_{ts}.csv", index=False)
+            EOF
+
+                python merge_results.py
 
       - name: Upload merged files to FTP
         env:
@@ -257,49 +170,33 @@ jobs:
           FTP_PATH: ${{ secrets.FTP_PATH }}
         run: |
           set -e
-          echo "📤 Uploading merged files to FTP..."
-          
-          # Install lftp if not present
-          if ! command -v lftp &> /dev/null; then
-              sudo apt-get update
-              sudo apt-get install -y lftp
-          fi
-          
-          upload_file() {
-              local file="$1"
-              if [ -f "$file" ]; then
-                  echo "Uploading $file..."
-                  
-                  cat > /tmp/ftp_commands.lftp << EOF
-set ftp:ssl-allow no
-set net:timeout 30
-set net:max-retries 3
-set net:reconnect-interval-base 5
-open $FTP_HOST
-user $FTP_USER $FTP_PASS
-mkdir -p $FTP_PATH
-cd $FTP_PATH
-put $file
-bye
-EOF
-                  
-                  lftp -f /tmp/ftp_commands.lftp
-                  rm -f /tmp/ftp_commands.lftp
-                  echo "✅ Uploaded: $file"
-              else
-                  echo "⚠️ File not found: $file"
-              fi
-          }
-          
-          # Upload all merged files
-          for file in merged_products_*.csv merged_sellers_*.csv; do
-              upload_file "$file"
-          done
-          
-          echo "📊 FTP upload complete"
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+          upload () {
+            FILE="$1"
+            echo "Uploading $FILE"
+
+            cat >/tmp/upload.lftp <<EOF
+          set ftp:ssl-allow no
+          open $FTP_HOST
+          user $FTP_USER $FTP_PASS
+          mkdir -p $FTP_PATH
+          cd $FTP_PATH
+          put $FILE
+          bye
+          EOF
+
+                      lftp -f /tmp/upload.lftp
+                      rm -f /tmp/upload.lftp
+                    }
+
+                    shopt -s nullglob
+
+                    for f in merged_products_*.csv; do upload "$f"; done
+                    for f in merged_sellers_*.csv; do upload "$f"; done
 
       - name: Upload merged artifacts
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: merged-results
@@ -308,55 +205,13 @@ EOF
             merged_sellers_*.csv
           retention-days: 7
 
-      - name: Create summary report
-        run: |
-          echo "## 📊 Google Shopping Scraping Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Count merged rows
-          PRODUCT_ROWS=0
-          SELLER_ROWS=0
-          
-          if ls merged_products_*.csv 1> /dev/null 2>&1; then
-              PRODUCT_ROWS=$(tail -n +2 merged_products_*.csv 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-          fi
-          
-          if ls merged_sellers_*.csv 1> /dev/null 2>&1; then
-              SELLER_ROWS=$(tail -n +2 merged_sellers_*.csv 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-          fi
-          
-          echo "### 📈 Results" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Products Scraped**: $PRODUCT_ROWS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Total Seller Entries**: $SELLER_ROWS" >> $GITHUB_STEP_SUMMARY
-          echo "- **Input File**: ${{ github.event.inputs.input_filename || 'google_shopping.csv' }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Chunks Processed**: ${{ github.event.inputs.total_chunks || 4 }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Features**: Audio Captcha Solving, Headless Chrome, FTP Upload" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "$PRODUCT_ROWS" -gt 0 ]; then
-              echo "### ✅ Success" >> $GITHUB_STEP_SUMMARY
-              echo "Scraping completed successfully with audio captcha support!" >> $GITHUB_STEP_SUMMARY
-          else
-              echo "### ⚠️ Warning" >> $GITHUB_STEP_SUMMARY
-              echo "No products were scraped. Check if:" >> $GITHUB_STEP_SUMMARY
-              echo "1. Input CSV file exists on FTP" >> $GITHUB_STEP_SUMMARY
-              echo "2. FTP credentials are correct" >> $GITHUB_STEP_SUMMARY
-              echo "3. Target site structure hasn't changed" >> $GITHUB_STEP_SUMMARY
-          fi
-
   notify:
     needs: merge
     runs-on: ubuntu-latest
     if: always()
 
     steps:
-      - name: Workflow Summary
+      - name: Summary
         run: |
-          echo "=========================================="
-          echo "🏁 Google Shopping Scraper Workflow Complete"
-          echo "=========================================="
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Run ID: $GITHUB_RUN_ID"
-          echo "Run URL: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          echo "Status: ${{ job.status }}"
-          echo "=========================================="
+          echo "Workflow finished"
+          echo "Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
