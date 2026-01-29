@@ -93,8 +93,8 @@ jobs:
             python-dateutil==2.8.2 \
             pydub==0.25.1 \
             SpeechRecognition==3.10.0 \
-            ftplib==0.8.0
-            python-doenv==1.0.0
+            ftplib==0.8.0 \
+            python-dotenv==1.0.0
       - name: Setup virtual display and audio environment
         run: |
           # Start Xvfb for headless display
