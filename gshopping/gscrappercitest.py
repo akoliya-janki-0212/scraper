@@ -413,7 +413,8 @@ def setup_driver():
         driver = uc.Chrome(
             options=options,
             headless=True,
-            use_subprocess=False
+            use_subprocess=False,
+            version_main=144
         )
         
         return driver
