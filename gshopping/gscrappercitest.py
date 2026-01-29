@@ -352,7 +352,7 @@ def setup_driver():
     """
     time.sleep(2)
     
-    # Create Chrome options
+    # Create Chrome options for undetected_chromedriver
     options = uc.ChromeOptions()
     
     # For GitHub Actions - use new headless mode
@@ -361,12 +361,9 @@ def setup_driver():
     # Essential for GitHub Actions
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
     
-    # Make it appear as real browser
+    # Make it appear as real browser (simplified for undetected_chromedriver)
     options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
     
     # Fake audio devices for GitHub Actions - CRITICAL FOR AUDIO CAPTCHA
     options.add_argument('--use-fake-device-for-media-stream')
@@ -389,11 +386,6 @@ def setup_driver():
     options.add_argument("--remote-debugging-port=9222")
     options.add_argument("--disable-background-timer-throttling")
     options.add_argument("--disable-backgrounding-occluded-windows")
-    options.add_argument("--disable-ipc-flooding-protection")
-    options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
-    options.add_argument("--disable-renderer-backgrounding")
-    options.add_argument("--disable-component-update")
-    options.add_argument("--disable-default-apps")
     
     # User agent rotation
     user_agents = [
@@ -406,51 +398,53 @@ def setup_driver():
     selected_ua = random.choice(user_agents)
     options.add_argument(f"user-agent={selected_ua}")
     
-    # Additional preferences for audio
+    # Additional preferences for audio (simplified for undetected_chromedriver)
     prefs = {
         "profile.default_content_setting_values.media_stream_mic": 1,
         "profile.default_content_setting_values.media_stream_camera": 1,
-        "profile.default_content_setting_values.geolocation": 1,
-        "profile.default_content_setting_values.notifications": 1,
         "credentials_enable_service": False,
         "profile.password_manager_enabled": False
     }
-    options.add_experimental_option("prefs", prefs)
     
     print(f"🚀 Starting browser with User-Agent: {selected_ua[:50]}...")
     
     try:
+        # Use undetected_chromedriver with simplified options
         driver = uc.Chrome(
             options=options,
             headless=True,
             use_subprocess=False
         )
         
-        # Execute CDP commands to further disguise automation
-        driver.execute_cdp_cmd('Network.setUserAgentOverride', {
-            "userAgent": selected_ua,
-            "platform": "Win32"
-        })
-        
-        # Set additional webdriver properties to false
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        
         return driver
         
     except Exception as e:
-        print(f"❌ Error setting up driver: {str(e)}")
-        # Fallback to regular Chrome
-        options = Options()
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument(f"user-agent={selected_ua}")
-        options.add_argument('--use-fake-device-for-media-stream')
-        options.add_argument('--use-fake-ui-for-media-stream')
+        print(f"❌ Error setting up undetected_chromedriver: {str(e)}")
+        print("Trying fallback with regular ChromeDriver...")
         
-        from selenium import webdriver
-        driver = webdriver.Chrome(options=options)
-        return driver
+        # Fallback to regular Chrome
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.service import Service
+            from webdriver_manager.chrome import ChromeDriverManager
+            
+            chrome_options = Options()
+            chrome_options.add_argument("--headless=new")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument(f"user-agent={selected_ua}")
+            chrome_options.add_argument('--use-fake-device-for-media-stream')
+            chrome_options.add_argument('--use-fake-ui-for-media-stream')
+            
+            service = Service(ChromeDriverManager().install())
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            
+            print("✅ Fallback to regular ChromeDriver successful")
+            return driver
+            
+        except Exception as fallback_error:
+            print(f"❌ Fallback also failed: {str(fallback_error)}")
+            raise
 
 def detects_recaptcha(driver):
     """Detect if reCAPTCHA is present on the page"""
