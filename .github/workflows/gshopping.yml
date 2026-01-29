@@ -53,19 +53,38 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            wget \
+            gnupg \
             google-chrome-stable \
             chromium-chromedriver \
             xvfb \
             lftp \
             ffmpeg \
             libasound2 \
+            libasound2-dev \
             libatk-bridge2.0-0 \
             libgtk-3-0 \
             libnss3 \
             libxss1 \
             libgbm1 \
             libu2f-udev \
-            fonts-liberation
+            fonts-liberation \
+            pulseaudio \
+            libpulse-dev \
+            portaudio19-dev \
+            lftp
+      - name: Setup virtual audio environment for captcha solving
+        run: |
+          # Start pulseaudio for virtual audio devices
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=virtual_speaker
+          pactl load-module module-virtual-source source_name=virtual_mic
+          
+          # Verify audio setup
+          pactl list short sinks | grep virtual_speaker || echo "Virtual sink not found"
+          pactl list short sources | grep virtual_mic || echo "Virtual source not found"
+          
+          echo "✅ Virtual audio environment ready"
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -78,8 +97,9 @@ jobs:
             lxml==4.9.3 \
             fake-useragent==1.4.0 \
             python-dateutil==2.8.2 \
-            pydub \
-            SpeechRecognition
+            pydub==0.25.1 \
+            SpeechRecognition==3.10.0 \
+            python-dotenv==1.0.0
       - name: Run scraper
         env:
           DISPLAY: :99
@@ -88,9 +108,18 @@ jobs:
           FTP_USER: ${{ secrets.FTP_USER }}
           FTP_PASS: ${{ secrets.FTP_PASS }}
           FTP_PATH: ${{ secrets.FTP_PATH }}
+          PULSE_SERVER: localhost
+          PULSE_SOURCE: virtual_mic
+          PULSE_SINK: virtual_speaker
         run: |
-          Xvfb :99 -screen 0 1920x1080x24 &
+          Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
+          export DISPLAY=:99
           sleep 3
+          
+          # Export audio environment variables
+          export PULSE_SERVER=localhost
+          export PULSE_SOURCE=virtual_mic
+          export PULSE_SINK=virtual_speaker
 
           INPUT_FILE="${{ github.event.inputs.input_filename || 'google_shopping.csv' }}"
           TOTAL_CHUNKS="${{ github.event.inputs.total_chunks || 4 }}"
