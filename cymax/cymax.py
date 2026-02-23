@@ -728,75 +728,6 @@ def main():
     crawl_delay = 0  # Override for this site (adjust if needed)
 
     # ------------------------------------------------------------------
-    # MODE X: Collect ALL product URLs from sitemap index (no scraping)
-    # ------------------------------------------------------------------
-    if COLLECT_URLS_ONLY:
-        log("=" * 60)
-        log("URL COLLECTION MODE – Collecting all product URLs only")
-        log(f"Base URL: {CURR_URL}")
-        log(f"Sitemap Index: {SITEMAP_INDEX}")
-        log(f"Output file: {MASTER_URLS_FILE}")
-        log("=" * 60)
-
-        sitemap = SITEMAP_INDEX
-        if robots_sitemap and robots_sitemap.startswith('http'):
-            sitemap = robots_sitemap
-
-        index = load_xml(sitemap, crawl_delay)
-        if index is None:
-            log("Failed to load sitemap index", "ERROR")
-            sys.exit(1)
-
-        ns = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-        sitemaps = []
-        for path in [".//ns:sitemap/ns:loc", ".//sitemap/loc", ".//loc"]:
-            elements = index.findall(path, ns) if "ns:" in path else index.findall(path)
-            if elements:
-                sitemaps = [e.text.strip() for e in elements if e.text]
-                break
-
-        if not sitemaps:
-            log("No sitemaps found in index", "ERROR")
-            sys.exit(1)
-
-        all_urls = []
-
-        for i, sitemap_url in enumerate(sitemaps, 1):
-            log(f"Collecting from sitemap {i}/{len(sitemaps)}: {sitemap_url}")
-            xml = load_xml(sitemap_url, crawl_delay)
-            if not xml:
-                continue
-
-            urls = []
-            for path in [".//ns:url/ns:loc", ".//url/loc", ".//loc"]:
-                elements = xml.findall(path, ns) if "ns:" in path else xml.findall(path)
-                if elements:
-                    urls = [
-                        e.text.strip()
-                        for e in elements
-                        if e.text
-                        and not any(ext in e.text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'])
-                        and ('.htm' in e.text)
-                    ]
-                    if urls:
-                        break
-
-            all_urls.extend(urls)
-
-        # Deduplicate while preserving order
-        unique_urls = list(dict.fromkeys(all_urls))
-
-        with open(MASTER_URLS_FILE, "w", encoding="utf-8") as f:
-            for url in unique_urls:
-                f.write(url + "\n")
-
-        log("=" * 60)
-        log(f"Total URLs collected: {len(unique_urls)}")
-        log(f"Saved to: {MASTER_URLS_FILE}")
-        log("=" * 60)
-
-        sys.exit(0)
-    # ------------------------------------------------------------------
     # MODE 0: Process URL list file with offset + limit (workflow chunk mode)
     # ------------------------------------------------------------------
     if PRODUCT_URLS_FILE:
@@ -1015,6 +946,75 @@ def main():
         log("=" * 60)
         return
 
+    # ------------------------------------------------------------------
+    # MODE X: Collect ALL product URLs from sitemap index (no scraping)
+    # ------------------------------------------------------------------
+    if COLLECT_URLS_ONLY:
+        log("=" * 60)
+        log("URL COLLECTION MODE – Collecting all product URLs only")
+        log(f"Base URL: {CURR_URL}")
+        log(f"Sitemap Index: {SITEMAP_INDEX}")
+        log(f"Output file: {MASTER_URLS_FILE}")
+        log("=" * 60)
+
+        sitemap = SITEMAP_INDEX
+        if robots_sitemap and robots_sitemap.startswith('http'):
+            sitemap = robots_sitemap
+
+        index = load_xml(sitemap, crawl_delay)
+        if index is None:
+            log("Failed to load sitemap index", "ERROR")
+            sys.exit(1)
+
+        ns = {"ns": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+        sitemaps = []
+        for path in [".//ns:sitemap/ns:loc", ".//sitemap/loc", ".//loc"]:
+            elements = index.findall(path, ns) if "ns:" in path else index.findall(path)
+            if elements:
+                sitemaps = [e.text.strip() for e in elements if e.text]
+                break
+
+        if not sitemaps:
+            log("No sitemaps found in index", "ERROR")
+            sys.exit(1)
+
+        all_urls = []
+
+        for i, sitemap_url in enumerate(sitemaps, 1):
+            log(f"Collecting from sitemap {i}/{len(sitemaps)}: {sitemap_url}")
+            xml = load_xml(sitemap_url, crawl_delay)
+            if not xml:
+                continue
+
+            urls = []
+            for path in [".//ns:url/ns:loc", ".//url/loc", ".//loc"]:
+                elements = xml.findall(path, ns) if "ns:" in path else xml.findall(path)
+                if elements:
+                    urls = [
+                        e.text.strip()
+                        for e in elements
+                        if e.text
+                        and not any(ext in e.text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'])
+                        and ('.htm' in e.text)
+                    ]
+                    if urls:
+                        break
+
+            all_urls.extend(urls)
+
+        # Deduplicate while preserving order
+        unique_urls = list(dict.fromkeys(all_urls))
+
+        with open(MASTER_URLS_FILE, "w", encoding="utf-8") as f:
+            for url in unique_urls:
+                f.write(url + "\n")
+
+        log("=" * 60)
+        log(f"Total URLs collected: {len(unique_urls)}")
+        log(f"Saved to: {MASTER_URLS_FILE}")
+        log("=" * 60)
+
+        sys.exit(0)
     # ------------------------------------------------------------------
     # MODE 2: Process a SITEMAP INDEX (original behaviour)
     # ------------------------------------------------------------------

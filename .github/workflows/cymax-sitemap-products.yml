@@ -123,25 +123,59 @@ jobs:
       - name: Install dependencies
         run: pip install requests beautifulsoup4
 
-      - name: Generate chunk matrix
-        id: generate_matrix
+      - name: Collect all product URLs
+        id: collect_urls
         env:
+          COLLECT_URLS_ONLY: "1"
+          MASTER_URLS_FILE: cymax_all_urls.txt
           CURR_URL: ${{ github.event.inputs.url }}
-          MAX_SITEMAPS: ${{ github.event.inputs.total_sitemaps }}
-          MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
-          URLS_PER_JOB: ${{ github.event.inputs.urls_per_job }}
-          SITEMAP_OFFSET: 0
-          CHUNK_GEN_WORKERS: ${{ steps.flaresolverr_pool.outputs.instances }}
-          FLARESOLVERR_TIMEOUT: 180
-          FLARESOLVERR_INSTANCES: ${{ steps.flaresolverr_pool.outputs.instances }}
-          FLARESOLVERR_URL: ${{ steps.flaresolverr_pool.outputs.first_url }}
-          FLARESOLVERR_URLS: ${{ steps.flaresolverr_pool.outputs.urls }}
-        run: python cymax/generate_chunks.py
-
-      - name: Debug matrix output
         run: |
-          echo "Generated matrix:"
-          echo '${{ steps.generate_matrix.outputs.matrix }}' | jq . || echo "Not valid JSON"
+          python cymax/cymax.py
+          if [ ! -f cymax_all_urls.txt ]; then
+            echo "URL file not generated"
+            exit 1
+          fi
+          TOTAL_URLS=$(wc -l < cymax_all_urls.txt)
+          echo "total_urls=$TOTAL_URLS" >> $GITHUB_OUTPUT
+          echo "Total URLs collected: $TOTAL_URLS"
+
+      - name: Generate dynamic chunk matrix from URL file
+        id: generate_matrix
+        run: |
+          URLS_PER_JOB="${{ github.event.inputs.urls_per_job }}"
+          TOTAL_URLS="${{ steps.collect_urls.outputs.total_urls }}"
+
+          if ! [[ "$URLS_PER_JOB" =~ ^[0-9]+$ ]] || [ "$URLS_PER_JOB" -lt 1 ]; then
+            URLS_PER_JOB=50000
+          fi
+
+          if [ "$TOTAL_URLS" -eq 0 ]; then
+            echo "matrix=[]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          CHUNK_COUNT=$(( (TOTAL_URLS + URLS_PER_JOB - 1) / URLS_PER_JOB ))
+
+          echo "Generating $CHUNK_COUNT chunks..."
+
+          MATRIX_JSON=$(jq -n \
+            --arg base_url "${{ github.event.inputs.url }}" \
+            --arg urls_file "cymax_all_urls.txt" \
+            --argjson chunk_count "$CHUNK_COUNT" \
+            --argjson urls_per_job "$URLS_PER_JOB" \
+            '
+            [ range(0; $chunk_count) |
+              {
+                chunk_id: .,
+                offset: (. * $urls_per_job),
+                limit: $urls_per_job,
+                base_url: $base_url,
+                urls_file: $urls_file
+              }
+            ]
+            ')
+
+          echo "matrix=$MATRIX_JSON" >> $GITHUB_OUTPUT
 
       - name: Stop FlareSolverr pool
         if: always()
@@ -236,9 +270,9 @@ jobs:
         id: scrape_run
         continue-on-error: true
         env:
-          SITEMAP_URL: ${{ matrix.sitemap_url }}
+          PRODUCT_URLS_FILE: ${{ matrix.urls_file }}
           URL_OFFSET: ${{ matrix.offset }}
-          MAX_URLS_PER_SITEMAP: ${{ matrix.limit }}
+          URL_LIMIT: ${{ matrix.limit }}
           CHUNK_ID: ${{ matrix.chunk_id }}
           CURR_URL: ${{ matrix.base_url }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
@@ -249,8 +283,8 @@ jobs:
           FLARESOLVERR_URLS: ${{ steps.flaresolverr_pool.outputs.urls }}
         run: |
           echo "Processing chunk $CHUNK_ID"
-          echo "Sitemap: $SITEMAP_URL"
-          echo "Offset: $URL_OFFSET, Limit: $MAX_URLS_PER_SITEMAP"
+          echo "Product URLs file: $PRODUCT_URLS_FILE"
+          echo "Offset: $URL_OFFSET, Limit: $URL_LIMIT"
           echo "FLARESOLVERR_INSTANCES: $FLARESOLVERR_INSTANCES"
           echo "FLARESOLVERR_URLS: $FLARESOLVERR_URLS"
           python cymax/cymax.py || echo "Scraper failed with exit code $?"
