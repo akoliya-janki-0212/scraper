@@ -16,6 +16,9 @@ on:
       urls_per_job:
         description: "Max URLs to process per job (splits large sitemaps)"
         default: "50000"
+      total_chunks:
+        description: "Number of parallel chunks to split into (0 = auto by urls_per_job)"
+        default: "0"
       max_workers:
         description: "Parallel requests per job"
         default: "6"
@@ -143,20 +146,28 @@ jobs:
         id: generate_matrix
         run: |
           URLS_PER_JOB="${{ github.event.inputs.urls_per_job }}"
+          TOTAL_CHUNKS="${{ github.event.inputs.total_chunks }}"
           TOTAL_URLS="${{ steps.collect_urls.outputs.total_urls }}"
-
-          if ! [[ "$URLS_PER_JOB" =~ ^[0-9]+$ ]] || [ "$URLS_PER_JOB" -lt 1 ]; then
-            URLS_PER_JOB=50000
-          fi
 
           if [ "$TOTAL_URLS" -eq 0 ]; then
             echo "matrix={\"include\":[]}" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          CHUNK_COUNT=$(( (TOTAL_URLS + URLS_PER_JOB - 1) / URLS_PER_JOB ))
+          # If user specifies total_chunks > 0, calculate URLs per job dynamically
+          if [[ "$TOTAL_CHUNKS" =~ ^[0-9]+$ ]] && [ "$TOTAL_CHUNKS" -gt 0 ]; then
+            CHUNK_COUNT="$TOTAL_CHUNKS"
+            URLS_PER_JOB=$(( (TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
+          else
+            if ! [[ "$URLS_PER_JOB" =~ ^[0-9]+$ ]] || [ "$URLS_PER_JOB" -lt 1 ]; then
+              URLS_PER_JOB=50000
+            fi
+            CHUNK_COUNT=$(( (TOTAL_URLS + URLS_PER_JOB - 1) / URLS_PER_JOB ))
+          fi
 
-          echo "Generating $CHUNK_COUNT chunks..."
+          echo "Total URLs: $TOTAL_URLS"
+          echo "Chunk count: $CHUNK_COUNT"
+          echo "URLs per job: $URLS_PER_JOB"
 
           MATRIX_JSON=$(jq -n \
             --arg base_url "${{ github.event.inputs.url }}" \
@@ -420,6 +431,7 @@ jobs:
           echo "  Request Delay: ${{ github.event.inputs.request_delay }}s"
           echo "  URLs/Sitemap:  ${{ github.event.inputs.urls_per_sitemap }}"
           echo "  URLs/Job:      ${{ github.event.inputs.urls_per_job }}"
+          echo "  Total Chunks:  ${{ github.event.inputs.total_chunks }}"
           echo "  Total Sitemaps: ${{ github.event.inputs.total_sitemaps }}"
           echo "  FlareSolverr:  Enabled"
           echo "========================================="
