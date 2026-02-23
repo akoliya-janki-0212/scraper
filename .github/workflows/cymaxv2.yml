@@ -1,0 +1,88 @@
+name: Cymax V2 Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Base site URL"
+        required: true
+        default: "https://www.cymax.com"
+      sitemap_offset:
+        description: "Start index in discovered product URLs"
+        required: true
+        default: "0"
+      max_products:
+        description: "Maximum products to scrape (0 = all)"
+        required: true
+        default: "0"
+      max_workers:
+        description: "Parallel requests"
+        required: true
+        default: "4"
+      request_delay:
+        description: "Base delay between requests in seconds"
+        required: true
+        default: "0.2"
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-cymaxv2-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-cymaxv2-
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --no-cache-dir requests beautifulsoup4 lxml cloudscraper curl-cffi
+
+      - name: Run Cymax V2 scraper
+        env:
+          CURR_URL: ${{ github.event.inputs.url }}
+          SITEMAP_OFFSET: ${{ github.event.inputs.sitemap_offset }}
+          MAX_PRODUCTS: ${{ github.event.inputs.max_products }}
+          MAX_WORKERS: ${{ github.event.inputs.max_workers }}
+          REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
+        run: |
+          echo "Running cymaxv2 with:"
+          echo "  CURR_URL=$CURR_URL"
+          echo "  SITEMAP_OFFSET=$SITEMAP_OFFSET"
+          echo "  MAX_PRODUCTS=$MAX_PRODUCTS"
+          echo "  MAX_WORKERS=$MAX_WORKERS"
+          echo "  REQUEST_DELAY=$REQUEST_DELAY"
+          python cymax/cymaxv2.py
+
+      - name: Validate output
+        run: |
+          OUT_FILE="cymax_products_${{ github.event.inputs.sitemap_offset }}.csv"
+          if [ ! -f "$OUT_FILE" ]; then
+            echo "Expected output not found: $OUT_FILE"
+            echo "Available CSV files:"
+            ls -1 *.csv 2>/dev/null || true
+            exit 1
+          fi
+          ROWS=$(tail -n +2 "$OUT_FILE" | wc -l | tr -d ' ')
+          echo "Output file: $OUT_FILE"
+          echo "Rows scraped: $ROWS"
+
+      - name: Upload CSV artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cymaxv2_output_${{ github.run_id }}
+          path: cymax_products_*.csv
+          if-no-files-found: error
+          retention-days: 7
