@@ -4,6 +4,7 @@ import time
 import sys
 import random
 import cloudscraper
+import requests
 from curl_cffi import requests as cc_requests
 from bs4 import BeautifulSoup
 import re
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import gc
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from typing import Optional, Tuple
 from xml.etree import ElementTree as ET
 import json
@@ -22,6 +23,7 @@ SITEMAP_OFFSET = int(os.getenv("SITEMAP_OFFSET", "0"))
 MAX_PRODUCTS = int(os.getenv("MAX_PRODUCTS", "0"))
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))  # Max 6 workers
 REQUEST_DELAY_BASE = float(os.getenv("REQUEST_DELAY", "0.2"))
+FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "").strip()
 
 OUTPUT_CSV = f"cymax_products_{SITEMAP_OFFSET}.csv"
 SCRAPED_DATE = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -114,6 +116,33 @@ class RequestManager:
         except Exception as e:
             log(f"Curl_cffi error for {url}: {e}")
             return None, 0
+
+    def _fetch_with_flaresolverr(self, url: str, crawl_delay=None) -> Optional[Tuple[str, int]]:
+        """Use FlareSolverr as fallback when direct methods are blocked"""
+        if not FLARESOLVERR_URL:
+            return None, 0
+        try:
+            self._respect_rate_limit(crawl_delay)
+            payload = {
+                "cmd": "request.get",
+                "url": url,
+                "maxTimeout": 120000
+            }
+            response = requests.post(FLARESOLVERR_URL, json=payload, timeout=90)
+            if response.status_code != 200:
+                return None, response.status_code
+            result = response.json()
+            if result.get("status") != "ok":
+                return None, 0
+            solution = result.get("solution", {})
+            content = solution.get("response", "")
+            status = int(solution.get("status", 200))
+            if content:
+                return content, status
+            return None, status
+        except Exception as e:
+            log(f"FlareSolverr error for {url}: {e}")
+            return None, 0
     
     def fetch(self, url: str, retry_count: int = 0, crawl_delay=None) -> Optional[str]:
         """Intelligent fetching with fallback strategies"""
@@ -134,6 +163,14 @@ class RequestManager:
         
         if content:
             return content
+
+        # If blocked and FlareSolverr is configured, try it immediately.
+        if status in [403, 429, 503] and FLARESOLVERR_URL:
+            fs_content, fs_status = self._fetch_with_flaresolverr(url, crawl_delay=crawl_delay)
+            if fs_content:
+                log(f"Recovered via FlareSolverr for {url}")
+                return fs_content
+            status = fs_status or status
         
         # Handle specific status codes
         if status in [403, 429, 503]:
@@ -244,14 +281,31 @@ def discover_product_urls(scraper, crawl_delay=None):
     if robots_sitemap and robots_sitemap.startswith('http'):
         sitemap_urls.append(robots_sitemap)
         log(f"Using sitemap from robots.txt: {robots_sitemap}")
+
+    # Always include common fallbacks (robots sitemap can be blocked from some IP ranges)
+    fallback_sitemaps = [
+        f"{CURR_URL}/sitemap.xml",
+        f"{CURR_URL}/sitemap_index.xml",
+        f"{CURR_URL}/sitemap/products.xml",
+        f"{CURR_URL}/sitemap_products_1.xml",
+    ]
+    # Include www/non-www variants for better compatibility
+    if "://www." in CURR_URL:
+        bare = CURR_URL.replace("://www.", "://", 1)
+        fallback_sitemaps.extend([
+            f"{bare}/sitemap.xml",
+            f"{bare}/sitemap_index.xml",
+        ])
     else:
-        # Try common sitemap locations
-        sitemap_urls = [
-            f"{CURR_URL}/sitemap.xml",
-            f"{CURR_URL}/sitemap_index.xml",
-            f"{CURR_URL}/sitemap/products.xml",
-            f"{CURR_URL}/sitemap_products_1.xml",
-        ]
+        www = CURR_URL.replace("://", "://www.", 1)
+        fallback_sitemaps.extend([
+            f"{www}/sitemap.xml",
+            f"{www}/sitemap_index.xml",
+        ])
+
+    # De-duplicate while preserving order
+    sitemap_urls.extend([u for u in fallback_sitemaps if u])
+    sitemap_urls = list(dict.fromkeys(sitemap_urls))
     
     # Process sitemaps
     for sitemap_url in sitemap_urls:
@@ -281,8 +335,10 @@ def discover_product_urls(scraper, crawl_delay=None):
     
     # Filter to product URLs (ending with .htm)
     product_urls = []
+    base_host = urlparse(CURR_URL).netloc.lower().replace("www.", "")
     for url in all_urls:
-        if '.htm' in url and CURR_URL in url:
+        host = urlparse(url).netloc.lower().replace("www.", "")
+        if '.htm' in url and host == base_host:
             # Filter out non-product URLs
             if not any(x in url for x in ['--C', '--PC', 'robots', 'sitemap', '/c-', '/category-']):
                 product_urls.append(url)

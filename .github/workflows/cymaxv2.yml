@@ -31,6 +31,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Start FlareSolverr
+        run: |
+          docker run -d --name flaresolverr --cap-add=SYS_ADMIN -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
+          for i in {1..45}; do
+            if curl -s -f -X POST "http://localhost:8191/v1" \
+              -H "Content-Type: application/json" \
+              -d '{"cmd":"sessions.list"}' >/dev/null 2>&1; then
+              echo "FlareSolverr is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "FlareSolverr did not become ready in time"
+          docker logs flaresolverr || true
+          exit 1
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -57,6 +73,7 @@ jobs:
           MAX_PRODUCTS: ${{ github.event.inputs.max_products }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
           REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
+          FLARESOLVERR_URL: http://localhost:8191/v1
         run: |
           echo "Running cymaxv2 with:"
           echo "  CURR_URL=$CURR_URL"
@@ -64,6 +81,7 @@ jobs:
           echo "  MAX_PRODUCTS=$MAX_PRODUCTS"
           echo "  MAX_WORKERS=$MAX_WORKERS"
           echo "  REQUEST_DELAY=$REQUEST_DELAY"
+          echo "  FLARESOLVERR_URL=$FLARESOLVERR_URL"
           python cymax/cymaxv2.py
 
       - name: Validate output
@@ -80,9 +98,15 @@ jobs:
           echo "Rows scraped: $ROWS"
 
       - name: Upload CSV artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cymaxv2_output_${{ github.run_id }}
           path: cymax_products_*.csv
           if-no-files-found: error
           retention-days: 7
+
+      - name: Stop FlareSolverr
+        if: always()
+        run: |
+          docker rm -f flaresolverr >/dev/null 2>&1 || true
