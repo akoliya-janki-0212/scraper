@@ -192,6 +192,13 @@ jobs:
 
           echo "matrix={\"include\":$MATRIX_JSON}" >> "$GITHUB_OUTPUT"
 
+      - name: Upload URL list artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cymax_url_list
+          path: cymax_all_urls.txt
+          if-no-files-found: error
+
       - name: Stop FlareSolverr pool
         if: always()
         run: |
@@ -289,6 +296,12 @@ jobs:
 
       - name: Install dependencies
         run: pip install --no-cache-dir requests beautifulsoup4 lxml
+
+      - name: Download URL list artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: cymax_url_list
+          path: .
 
       - name: Run scraper chunk
         id: scrape_run
