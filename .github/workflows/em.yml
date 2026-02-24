@@ -83,40 +83,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml cloudscraper
 
-      - name: Create scraper (cloudscraper version)
-        run: |
-          echo "Starting Emma Mason scraper with FlareSolverr:"
-          echo "CURR_URL: $CURR_URL"
-          echo "SITEMAP_OFFSET: $SITEMAP_OFFSET"
-          echo "MAX_SITEMAPS: $MAX_SITEMAPS"
-          echo "MAX_URLS_PER_SITEMAP: $MAX_URLS_PER_SITEMAP"
-          echo "MAX_WORKERS: $MAX_WORKERS"
-          echo "REQUEST_DELAY: $REQUEST_DELAY"
-          echo "SAMPLE_SIZE: $SAMPLE_SIZE"
-          echo "FLARESOLVERR_URL: $FLARESOLVERR_URL"
-          echo ""
-          
-          # Add connection test in Python
-          python -c "
-          import requests
-          import sys
-          try:
-              r = requests.post('http://localhost:8191/v1', 
-                              json={'cmd': 'sessions.list'}, 
-                              timeout=10)
-              print(f'✓ FlareSolverr connection test: {r.status_code}')
-              sys.exit(0)
-          except Exception as e:
-              print(f'✗ FlareSolverr connection failed: {e}')
-              sys.exit(1)
-          "
-          
-          python drl/em.py || echo "Scraper failed with exit code $?"
-          
-          echo ""
-          echo "Generated files:"
-          ls -la *.csv 2>/dev/null || echo "No CSV files generated"
-
       - name: Run Emma Mason scraper (cloudscraper)
         id: scrape_run
         continue-on-error: true
