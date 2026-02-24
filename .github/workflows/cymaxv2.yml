@@ -18,7 +18,7 @@ on:
       total_products_limit:
         description: "Total products to process (0 = all discovered)"
         required: true
-        default: "2900"
+        default: "0"
       max_parallel_jobs:
         description: "Maximum matrix jobs running in parallel"
         required: true
@@ -47,7 +47,7 @@ jobs:
       matrix: ${{ steps.generate_matrix.outputs.matrix }}
       total_urls: ${{ steps.collect_urls.outputs.total_urls }}
       urls_file: ${{ steps.collect_urls.outputs.urls_file }}
-      effective_total_urls: ${{ steps.collect_urls.outputs.total_urls }}
+      effective_total_urls: ${{ steps.generate_matrix.outputs.effective_total_urls }}
       chunk_count: ${{ steps.generate_matrix.outputs.chunk_count }}
       urls_per_job: ${{ steps.generate_matrix.outputs.urls_per_job }}
     steps:
@@ -364,6 +364,7 @@ jobs:
           PRODUCT_URLS_FILE: ${{ matrix.urls_file }}
           URL_OFFSET: ${{ matrix.offset }}
           URL_LIMIT: ${{ matrix.limit }}
+          CHUNK_ID: ${{ matrix.chunk_id }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
           REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
           FLARESOLVERR_URL: ${{ steps.flaresolverr_pool.outputs.first_url }}
