@@ -5,18 +5,23 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List
+import os
 
 import requests
 
 
 ENDPOINT = (
-    "https://ctz7lv7pje-2.algolianet.com/1/indexes/*/queries"
+    "https://CTZ7LV7PJE-dsn.algolia.net/1/indexes/*/queries"
     "?x-algolia-agent=Algolia%20for%20JavaScript%20(4.24.0)%3B%20Browser%3B"
     "%20instantsearch.js%20(4.77.0)%3B%20Magento2%20integration%20(3.15.1)%3B"
     "%20JS%20Helper%20(3.23.0)"
 )
 
 INDEX_NAME = "magento2_emmamason_products"
+
+# ===== CHUNK CONFIG (for GitHub matrix) =====
+CHUNK_INDEX = int(os.getenv("CHUNK_INDEX", "0"))
+CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "0"))  # number of pages per job
 
 PARAMS_TEMPLATE = (
     "facets=%5B%22brand%22%2C%22categories.level0%22%2C%22collection_style%22%2C"
@@ -29,13 +34,10 @@ PARAMS_TEMPLATE = (
 
 HEADERS = {
     "accept": "*/*",
-    "content-type": "application/x-www-form-urlencoded",
+    "content-type": "application/json",
     "origin": "https://emmamason.com",
     "referer": "https://emmamason.com/",
-    "x-algolia-api-key": (
-        "YjQ3NzQ4MWY2NDMzZDljNzhkNDliYTYyYTAyZWJjMTg2NzhhNjU5ZjZhNmVhNTc5YmNiMzFmY"
-        "jk2NjY1NjQzMXRhZ0ZpbHRlcnM9JnZhbGlkVW50aWw9MTc3MTMwNDg4Mg=="
-    ),
+    "x-algolia-api-key": "YzcwNjgwYzEwN2M1Y2JmNGI5ZGMzMTYwZWUwNWNlMmQ2NjBmZTQ0NWI3MmViYjlhZmVhYTg1MmUxNWI1ODc0NHRhZ0ZpbHRlcnM9JnZhbGlkVW50aWw9MTc3MjAxMTUxMw==",
     "x-algolia-application-id": "CTZ7LV7PJE",
     "user-agent": (
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -194,53 +196,49 @@ def run(
     retries: int,
 ) -> None:
     scraped_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    requested_page = page
 
-    if page < 0:
-        raise ValueError("--page must be 0 or greater")
     if max_workers < 1:
         raise ValueError("--max-workers must be at least 1")
 
-    first = fetch_page_with_retries(
-        page=0 if page == 0 else page,
-        hits_per_page=hits_per_page,
-        timeout=timeout,
-        retries=retries,
-        delay=delay,
-    )
-    nb_pages = int(first.get("nbPages", 1))
-    nb_hits = int(first.get("nbHits", len(first.get("hits", []))))
+    # Determine page range for this chunk
+    start_page = CHUNK_INDEX * CHUNK_SIZE if CHUNK_SIZE > 0 else 0
+    end_page = start_page + CHUNK_SIZE if CHUNK_SIZE > 0 else None
 
-    if requested_page == 0:
-        page_results: Dict[int, Dict[str, Any]] = {0: first}
-        remaining_pages = list(range(1, nb_pages))
-        if remaining_pages:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_page = {
-                    executor.submit(
-                        fetch_page_with_retries,
-                        p,
-                        hits_per_page,
-                        timeout,
-                        retries,
-                        delay,
-                    ): p
-                    for p in remaining_pages
-                }
-                for future in as_completed(future_to_page):
-                    p = future_to_page[future]
-                    page_results[p] = future.result()
-        selected_pages = sorted(page_results.keys())
-        all_hits: List[Dict[str, Any]] = []
-        for p in selected_pages:
-            all_hits.extend(page_results[p].get("hits", []))
-    else:
-        if requested_page >= nb_pages:
-            raise ValueError(
-                f"Requested page {requested_page} is out of range. Valid pages are 0 to {max(nb_pages - 1, 0)}."
+    print(f"Chunk index: {CHUNK_INDEX}")
+    print(f"Chunk size (pages): {CHUNK_SIZE}")
+    print(f"Start page: {start_page}")
+    print(f"End page: {end_page if end_page else 'ALL'}")
+
+    all_hits: List[Dict[str, Any]] = []
+    current_page = start_page
+
+    while True:
+        if end_page is not None and current_page >= end_page:
+            break
+
+        try:
+            result = fetch_page_with_retries(
+                page=current_page,
+                hits_per_page=hits_per_page,
+                timeout=timeout,
+                retries=retries,
+                delay=delay,
             )
-        all_hits = first.get("hits", [])
-        selected_pages = [requested_page]
+        except Exception:
+            print(f"Stopping at page {current_page} (error).")
+            break
+
+        hits = result.get("hits", [])
+        if not hits:
+            print(f"No hits found at page {current_page}. Stopping.")
+            break
+
+        all_hits.extend(hits)
+        print(f"Fetched page {current_page} | Total records: {len(all_hits)}")
+        current_page += 1
+
+    if not all_hits:
+        raise RuntimeError("No records fetched for this chunk.")
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         rows = list(executor.map(lambda h: hit_to_row(h, scraped_date), all_hits))
@@ -253,13 +251,9 @@ def run(
     if output_json:
         payload = {
             "source": "emmamason_algolia",
-            "endpoint": ENDPOINT,
-            "indexName": INDEX_NAME,
-            "fetched_at_utc": datetime.now(timezone.utc).isoformat(),
-            "requested_page": requested_page,
-            "fetched_pages": selected_pages,
-            "nbPages": nb_pages,
-            "nbHits": nb_hits,
+            "chunk_index": CHUNK_INDEX,
+            "start_page": start_page,
+            "end_page": current_page - 1,
             "records_fetched": len(all_hits),
             "hits": all_hits,
         }
@@ -267,8 +261,6 @@ def run(
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
     print(f"Saved {len(rows)} rows to {output_csv}")
-    if output_json:
-        print(f"Saved JSON payload to {output_json}")
 
 
 def main() -> None:
