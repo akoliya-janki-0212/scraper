@@ -61,7 +61,7 @@ class RequestManager:
                 'platform': 'windows',
                 'mobile': False
             },
-            delay=10  # Cloudflare challenge delay
+            delay=0
         )
         
         # Enhanced headers for both scrapers
@@ -114,7 +114,6 @@ class RequestManager:
     def _fetch_with_cloudscraper(self, url: str, crawl_delay=None) -> Optional[Tuple[str, int]]:
         """Use cloudscraper for Cloudflare-protected pages"""
         try:
-            self._respect_rate_limit(crawl_delay)
             response = self.scraper.get(url, timeout=45)
             if response.status_code == 200:
                 # Check for Cloudflare block
@@ -130,8 +129,6 @@ class RequestManager:
     def _fetch_with_curl_cffi(self, url: str, crawl_delay=None) -> Optional[Tuple[str, int]]:
         """Use curl_cffi for JavaScript-heavy pages"""
         try:
-            self._respect_rate_limit(crawl_delay)
-            # Use impersonate to mimic real browser TLS fingerprint
             response = cc_requests.get(
                 url, 
                 # headers=self.headers,
@@ -151,12 +148,12 @@ class RequestManager:
         if not self.fs_endpoints:
             return None, 0
         try:
-            self._respect_rate_limit(crawl_delay)
+            session = requests.Session()
             payload = {"cmd": "request.get", "url": url, "maxTimeout": 120000}
             last_status = 0
             for endpoint in self._ordered_fs_endpoints():
                 try:
-                    response = requests.post(
+                    response = session.post(
                         endpoint,
                         json=payload,
                         timeout=90,
@@ -181,50 +178,26 @@ class RequestManager:
             return None, 0
     
     def fetch(self, url: str, retry_count: int = 0, crawl_delay=None) -> Optional[str]:
-        """Intelligent fetching with fallback strategies"""
-        if retry_count >= len(self.retry_delays):
-            log(f"Max retries exceeded for {url}")
-            return None
-        # retry_count = 1;
-        # Choose strategy based on retry count
-        if retry_count == 0:
-            # First try: cloudscraper (best for Cloudflare)
-            content, status = self._fetch_with_cloudscraper(url, crawl_delay)
-        elif retry_count % 2 == 1:
-            # Odd retries: curl_cffi
-            content, status = self._fetch_with_curl_cffi(url, crawl_delay)
-        else:
-            # Even retries: cloudscraper again
-            content, status = self._fetch_with_cloudscraper(url, crawl_delay)
-        
-        if content:
-            return content
+        for attempt in range(len(self.retry_delays)):
+            if attempt == 0:
+                content, status = self._fetch_with_cloudscraper(url, crawl_delay)
+            else:
+                content, status = self._fetch_with_curl_cffi(url, crawl_delay)
 
-        # If blocked and FlareSolverr is configured, try it immediately.
-        if status in [403, 429, 503] and self.fs_endpoints:
-            fs_content, fs_status = self._fetch_with_flaresolverr(url, crawl_delay=crawl_delay)
-            if fs_content:
-                log(f"Recovered via FlareSolverr for {url}")
-                return fs_content
-            status = fs_status or status
-        
-        # Handle specific status codes
-        if status in [403, 429, 503]:
-            delay = self.retry_delays[retry_count] + random.uniform(0, 1)
-            log(f"HTTP {status} for {url}, retry {retry_count+1} in {delay:.1f}s")
-            time.sleep(delay)
-            return self.fetch(url, retry_count + 1, crawl_delay)
-        elif status == 404:
-            log(f"URL not found: {url}")
-            return None
-        
-        # For other errors, retry with delay
-        if status != 200:
-            delay = self.retry_delays[retry_count]
-            log(f"Retry {retry_count+1} for {url} in {delay}s")
-            time.sleep(delay)
-            return self.fetch(url, retry_count + 1, crawl_delay)
-        
+            if content:
+                return content
+
+            # Only fallback to FlareSolverr on 403
+            if status == 403 and self.fs_endpoints:
+                fs_content, fs_status = self._fetch_with_flaresolverr(url, crawl_delay)
+                if fs_content:
+                    return fs_content
+
+            if status == 404:
+                return None
+
+            time.sleep(self.retry_delays[attempt])
+
         return None
     
     def get(self, url, max_retries=3):
@@ -559,10 +532,10 @@ csv_lock = threading.Lock()
 
 def process_product(url, writer, scraper, seen, results, crawl_delay=None):
     """Process a single product and write to CSV"""
-    if url in seen:
-        return
-    
-    seen.add(url)
+    with csv_lock:
+        if url in seen:
+            return
+        seen.add(url)
     
     try:
         html = scraper.fetch(url, crawl_delay=crawl_delay)
@@ -605,11 +578,6 @@ def process_product(url, writer, scraper, seen, results, crawl_delay=None):
         results.append(product['product_id'])
         log(f"✓ Processed {len(product['variants'])} variants for {product['product_id']}")
         
-        # Variable delay between products
-        base_delay = crawl_delay if crawl_delay else REQUEST_DELAY_BASE
-        delay = random.uniform(base_delay * 0.8, base_delay * 1.5)
-        time.sleep(delay)
-        
     except Exception as e:
         log(f"Error processing {url}: {e}")
 
@@ -644,8 +612,9 @@ def process_urls(product_urls, scraper, crawl_delay):
         seen = set()
         results = []
 
-        log(f"Starting processing with {MAX_WORKERS} workers...")
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        workers = min(100, (os.cpu_count() or 4) * 5)
+        log(f"Starting processing with {workers} workers...")
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = []
             for url in product_urls:
                 future = executor.submit(
