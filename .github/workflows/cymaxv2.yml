@@ -1,7 +1,3 @@
-concurrency:
-  group: cymaxv2-${{ github.ref }}
-  cancel-in-progress: false
-
 name: Cymax V2 Scaled Scraper
 
 on:
@@ -43,7 +39,6 @@ on:
 jobs:
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     outputs:
       matrix: ${{ steps.generate_matrix.outputs.matrix }}
       total_urls: ${{ steps.collect_urls.outputs.total_urls }}
@@ -51,10 +46,6 @@ jobs:
       chunk_count: ${{ steps.generate_matrix.outputs.chunk_count }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Pre-pull FlareSolverr image
-        run: |
-          docker pull ghcr.io/flaresolverr/flaresolverr:latest
 
       - name: Start FlareSolverr pool
         id: flaresolverr_pool
@@ -71,14 +62,7 @@ jobs:
           for ((i=0; i<INSTANCES; i++)); do
             PORT=$((BASE_PORT + i))
             NAME="flaresolverr_${PORT}"
-            if ! docker run -d \
-              --name "$NAME" \
-              --cap-add=SYS_ADMIN \
-              --shm-size=1g \
-              --restart=unless-stopped \
-              -e LOG_LEVEL=warning \
-              -p "${PORT}:8191" \
-              ghcr.io/flaresolverr/flaresolverr:latest >/dev/null; then
+            if ! docker run -d --name "$NAME" --cap-add=SYS_ADMIN -p "${PORT}:8191" ghcr.io/flaresolverr/flaresolverr:latest >/dev/null; then
               echo "Failed to launch $NAME"
             fi
           done
@@ -88,7 +72,7 @@ jobs:
             NAME="flaresolverr_${PORT}"
             URL="http://localhost:${PORT}/v1"
             READY=0
-            for attempt in {1..25}; do
+            for attempt in {1..45}; do
               if curl -s -f -X POST "$URL" \
                 -H "Content-Type: application/json" \
                 -d '{"cmd":"sessions.list"}' >/dev/null 2>&1; then
@@ -139,11 +123,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          export PIP_DISABLE_PIP_VERSION_CHECK=1
-          export PYTHONUNBUFFERED=1
           python -m pip install --upgrade pip
-          pip install --no-cache-dir --prefer-binary requests beautifulsoup4 lxml cloudscraper curl-cffi
-
+          pip install --no-cache-dir requests beautifulsoup4 lxml cloudscraper curl-cffi
 
       - name: Collect all product URLs
         id: collect_urls
@@ -250,10 +231,9 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.chunk_count != '0' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel_jobs) > 50 && 50 || fromJSON(github.event.inputs.max_parallel_jobs) }}
+      max-parallel: ${{ fromJSON(github.event.inputs.max_parallel_jobs) }}
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
@@ -263,10 +243,6 @@ jobs:
         with:
           name: cymaxv2_url_list
           path: .
-
-      - name: Pre-pull FlareSolverr image
-        run: |
-          docker pull ghcr.io/flaresolverr/flaresolverr:latest
 
       - name: Start FlareSolverr pool
         id: flaresolverr_pool
@@ -283,14 +259,7 @@ jobs:
           for ((i=0; i<INSTANCES; i++)); do
             PORT=$((BASE_PORT + i))
             NAME="flaresolverr_${PORT}"
-            if ! docker run -d \
-              --name "$NAME" \
-              --cap-add=SYS_ADMIN \
-              --shm-size=1g \
-              --restart=unless-stopped \
-              -e LOG_LEVEL=warning \
-              -p "${PORT}:8191" \
-              ghcr.io/flaresolverr/flaresolverr:latest >/dev/null; then
+            if ! docker run -d --name "$NAME" --cap-add=SYS_ADMIN -p "${PORT}:8191" ghcr.io/flaresolverr/flaresolverr:latest >/dev/null; then
               echo "Failed to launch $NAME"
             fi
           done
@@ -300,7 +269,7 @@ jobs:
             NAME="flaresolverr_${PORT}"
             URL="http://localhost:${PORT}/v1"
             READY=0
-            for attempt in {1..25}; do
+            for attempt in {1..45}; do
               if curl -s -f -X POST "$URL" \
                 -H "Content-Type: application/json" \
                 -d '{"cmd":"sessions.list"}' >/dev/null 2>&1; then
@@ -351,11 +320,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          export PIP_DISABLE_PIP_VERSION_CHECK=1
-          export PYTHONUNBUFFERED=1
           python -m pip install --upgrade pip
-          pip install --no-cache-dir --prefer-binary requests beautifulsoup4 lxml cloudscraper curl-cffi
-
+          pip install --no-cache-dir requests beautifulsoup4 lxml cloudscraper curl-cffi
 
       - name: Run chunk scraper
         env:
@@ -391,7 +357,6 @@ jobs:
   merge:
     needs: [plan, scrape]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     if: always() && !cancelled()
     steps:
       - name: Download all chunks
