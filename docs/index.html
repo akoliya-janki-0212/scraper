@@ -720,6 +720,9 @@
                     <span style="color:var(--green)"><b id="running-count">0</b> active</span>
                 </div>
                 <button class="logout-btn" onclick="logout()">Logout</button>
+                <button class="logout-btn" onclick="syncFork()" style="border-color:#667eea;color:#667eea">
+                    Sync Fork
+                </button>
             </div>
         </div>
     </header>
@@ -1170,6 +1173,31 @@
             document.getElementById('running-count').textContent = active;
         }
 
+        // ===== SYNC FORK =====
+        async function syncFork() {
+            if (!REPO) {
+                toast('Repository not set', 'error');
+                return;
+            }
+
+            try {
+                toast('🔄 Syncing fork with upstream...', '');
+
+                const res = await ghFetch(`/repos/${REPO}/merge-upstream`, {
+                    method: 'POST',
+                    body: JSON.stringify({ branch: 'main' })
+                });
+
+                if (res.ok) {
+                    toast('✅ Fork synced successfully!', 'ok');
+                } else {
+                    const body = await res.json().catch(() => ({}));
+                    toast(`❌ Sync failed: ${body.message || res.status}`, 'error');
+                }
+            } catch (e) {
+                toast(`❌ Network error: ${e.message}`, 'error');
+            }
+        }
         // ===== GITHUB API =====
         async function ghFetch(path, opts = {}) {
             return fetch(`https://api.github.com${path}`, {
