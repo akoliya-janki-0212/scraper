@@ -15,6 +15,10 @@ on:
         description: "Fixed chunk count (0 = auto from urls_per_job)"
         required: true
         default: "0"
+      total_products_limit:
+        description: "Total products to process (0 = all discovered)"
+        required: true
+        default: "2900"
       max_parallel_jobs:
         description: "Maximum matrix jobs running in parallel"
         required: true
@@ -184,6 +188,7 @@ jobs:
           echo "total_urls=$TOTAL_URLS" >> "$GITHUB_OUTPUT"
           echo "URL file downloaded: $REMOTE_DIR/$REMOTE_FILE"
           echo "Total unique URLs loaded: $TOTAL_URLS"
+          echo "Total URLs discovered: $TOTAL_URLS"
 
       - name: Build chunk matrix
         id: generate_matrix
@@ -191,49 +196,62 @@ jobs:
           TOTAL_URLS: ${{ steps.collect_urls.outputs.total_urls }}
           URLS_PER_JOB_INPUT: ${{ github.event.inputs.urls_per_job }}
           TOTAL_CHUNKS_INPUT: ${{ github.event.inputs.total_chunks }}
+          TOTAL_PRODUCTS_LIMIT_INPUT: ${{ github.event.inputs.total_products_limit }}
         run: |
           TOTAL_URLS="${TOTAL_URLS:-0}"
           URLS_PER_JOB="$URLS_PER_JOB_INPUT"
           TOTAL_CHUNKS="$TOTAL_CHUNKS_INPUT"
+          TOTAL_PRODUCTS_LIMIT="$TOTAL_PRODUCTS_LIMIT_INPUT"
 
           if ! [[ "$TOTAL_URLS" =~ ^[0-9]+$ ]] || [ "$TOTAL_URLS" -le 0 ]; then
             echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             echo "chunk_count=0" >> "$GITHUB_OUTPUT"
-            echo "urls_per_job=0" >> "$GITHUB_OUTPUT"
+            echo "effective_total_urls=0" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+           EFFECTIVE_TOTAL_URLS="$TOTAL_URLS"
+          if [[ "$TOTAL_PRODUCTS_LIMIT" =~ ^[0-9]+$ ]] && [ "$TOTAL_PRODUCTS_LIMIT" -gt 0 ] && [ "$TOTAL_PRODUCTS_LIMIT" -lt "$TOTAL_URLS" ]; then
+            EFFECTIVE_TOTAL_URLS="$TOTAL_PRODUCTS_LIMIT"
           fi
 
           if [[ "$TOTAL_CHUNKS" =~ ^[0-9]+$ ]] && [ "$TOTAL_CHUNKS" -gt 0 ]; then
             CHUNK_COUNT="$TOTAL_CHUNKS"
-            URLS_PER_JOB=$(( (TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
+            URLS_PER_JOB=$(( (EFFECTIVE_TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
           else
             if ! [[ "$URLS_PER_JOB" =~ ^[0-9]+$ ]] || [ "$URLS_PER_JOB" -lt 1 ]; then
               URLS_PER_JOB=5000
             fi
-            CHUNK_COUNT=$(( (TOTAL_URLS + URLS_PER_JOB - 1) / URLS_PER_JOB ))
+            CHUNK_COUNT=$(( (EFFECTIVE_TOTAL_URLS + URLS_PER_JOB - 1) / URLS_PER_JOB ))
           fi
 
           MAX_MATRIX_JOBS=256
           if [ "$CHUNK_COUNT" -gt "$MAX_MATRIX_JOBS" ]; then
             echo "Requested chunk count $CHUNK_COUNT exceeds $MAX_MATRIX_JOBS; capping."
             CHUNK_COUNT="$MAX_MATRIX_JOBS"
-            URLS_PER_JOB=$(( (TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
+            URLS_PER_JOB=$(( (EFFECTIVE_TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
           fi
 
-          MATRIX_JSON=$(jq -cn \
+           MATRIX_JSON=$(jq -cn \
+            --arg base_url "${{ github.event.inputs.url }}" \
+            --arg urls_file "cymaxv2_all_urls.txt" \
             --argjson chunk_count "$CHUNK_COUNT" \
+            --argjson urls_per_job "$URLS_PER_JOB" \
             '[ range(0; $chunk_count) |
               {
-                chunk_id: .
+                chunk_id: .,
+                offset: (. * $urls_per_job),
+                limit: $urls_per_job,
+                base_url: $base_url,
+                urls_file: $urls_file
               }
             ]')
 
           echo "matrix={\"include\":$MATRIX_JSON}" >> "$GITHUB_OUTPUT"
           echo "chunk_count=$CHUNK_COUNT" >> "$GITHUB_OUTPUT"
-          echo "urls_per_job=$URLS_PER_JOB" >> "$GITHUB_OUTPUT"
+          echo "effective_total_urls=$EFFECTIVE_TOTAL_URLS" >> "$GITHUB_OUTPUT"
 
-          echo "Total URLs from FTP file: $TOTAL_URLS"
-          echo "Total URLs to process: $TOTAL_URLS"
+          echo "Total discovered URLs: $TOTAL_URLS"
+          echo "Total URLs to process: $EFFECTIVE_TOTAL_URLS"
           echo "Chunk count: $CHUNK_COUNT"
           echo "URLs per job: $URLS_PER_JOB"
 
@@ -246,12 +264,12 @@ jobs:
 
   scrape:
     needs: plan
-    if: ${{ needs.plan.result == 'success' && needs.plan.outputs.matrix != '' && needs.plan.outputs.chunk_count != '0' }}
+    if: ${{ needs.plan.outputs.chunk_count != '0' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(github.event.inputs.max_parallel_jobs) }}
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix || '{"include":[]}') }}
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -342,34 +360,18 @@ jobs:
 
       - name: Run chunk scraper
         env:
-          CURR_URL: ${{ github.event.inputs.url }}
-          PRODUCT_URLS_FILE: ${{ needs.plan.outputs.urls_file }}
-          CHUNK_ID: ${{ matrix.chunk_id }}
-          TOTAL_URLS: ${{ needs.plan.outputs.total_urls }}
-          PLAN_CHUNK_COUNT: ${{ needs.plan.outputs.chunk_count }}
-          PLAN_URLS_PER_JOB: ${{ needs.plan.outputs.urls_per_job }}
+          CURR_URL: ${{ matrix.base_url }}
+          PRODUCT_URLS_FILE: ${{ matrix.urls_file }}
+          URL_OFFSET: ${{ matrix.offset }}
+          URL_LIMIT: ${{ matrix.limit }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
           REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
           FLARESOLVERR_URL: ${{ steps.flaresolverr_pool.outputs.first_url }}
           FLARESOLVERR_URLS: ${{ steps.flaresolverr_pool.outputs.urls }}
         run: |
-          URLS_PER_JOB="$PLAN_URLS_PER_JOB"
-          if ! [[ "$URLS_PER_JOB" =~ ^[0-9]+$ ]] || [ "$URLS_PER_JOB" -lt 1 ]; then
-            URLS_PER_JOB="${{ github.event.inputs.urls_per_job }}"
-          fi
-          if ! [[ "$URLS_PER_JOB" =~ ^[0-9]+$ ]] || [ "$URLS_PER_JOB" -lt 1 ]; then
-            URLS_PER_JOB=5000
-          fi
-
-          URL_OFFSET=$(( CHUNK_ID * URLS_PER_JOB ))
-          URL_LIMIT="$URLS_PER_JOB"
-
-          export URL_OFFSET URL_LIMIT
           echo "Chunk: $CHUNK_ID"
           echo "Offset: $URL_OFFSET"
           echo "Limit: $URL_LIMIT"
-          echo "Plan chunk count: $PLAN_CHUNK_COUNT"
-          echo "Total URLs: $TOTAL_URLS"
           echo "Workers: $MAX_WORKERS"
           python cymax/cymaxv2.py
 
