@@ -232,32 +232,28 @@ class RequestManager:
             time.sleep(target_delay - elapsed)
         self._thread_local.last_request_time = time.time()
     
-    def fetch(self, url: str, retry_count: int = 0, crawl_delay=None) -> Optional[str]:
-        if retry_count >= len(self.retry_delays):
-            log(f"Max retries exceeded for {url}")
-            return None
-        
-        self._respect_rate_limit(crawl_delay)
-        content, status = flaresolverr_request(url)
-        
-        if content and status == 200:
-            return content
-        
-        if status in [403, 429, 503]:
-            delay = self.retry_delays[retry_count] + random.uniform(0, 1)
-            log(f"HTTP {status} for {url}, retry {retry_count+1} in {delay:.1f}s")
-            time.sleep(delay)
-            return self.fetch(url, retry_count + 1, crawl_delay)
-        elif status == 404:
-            log(f"URL not found: {url}")
-            return None
-        
-        if status != 200 and status != 0:
-            delay = self.retry_delays[retry_count]
-            log(f"Retry {retry_count+1} for {url} in {delay}s (status: {status})")
-            time.sleep(delay)
-            return self.fetch(url, retry_count + 1, crawl_delay)
-        
+    def fetch(self, url: str, crawl_delay=None) -> Optional[str]:
+        for retry_count, delay in enumerate(self.retry_delays):
+            self._respect_rate_limit(crawl_delay)
+            content, status = flaresolverr_request(url)
+
+            if content and status == 200:
+                return content
+
+            if status == 404:
+                return None
+
+            if status in [403, 429, 503]:
+                sleep_time = delay + random.uniform(0, 1)
+                log(f"HTTP {status} for {url}, retry in {sleep_time:.1f}s")
+                time.sleep(sleep_time)
+                continue
+
+            if status != 200 and status != 0:
+                time.sleep(delay)
+                continue
+
+        log(f"Max retries exceeded for {url}")
         return None
 
 request_manager = RequestManager()
@@ -320,33 +316,8 @@ def extract_datalayer(html_text):
     return _clean_strings(data)
 
 def extract_additional_product_info(html_text):
-    try:
-        soup = BeautifulSoup(html_text, 'html.parser')
-        table = soup.find('table', id='product-attribute-specs-table')
-        if not table:
-            table = soup.find('table', class_='additional-attributes')
-            if not table:
-                return json.dumps({})
-        additional_info = {}
-        tbody = table.find('tbody')
-        if tbody:
-            rows = tbody.find_all('tr')
-        else:
-            rows = table.find_all('tr')
-        for row in rows:
-            th = row.find('th')
-            td = row.find('td')
-            if th and td:
-                label_text = th.get_text(strip=True)
-                data_text = td.get_text(strip=True)
-                if label_text and data_text:
-                    json_key = re.sub(r'[^a-zA-Z0-9_]', '_', label_text.lower().replace(' ', '_'))
-                    json_key = json_key.strip('_')
-                    additional_info[json_key] = data_text
-        return json.dumps(additional_info, ensure_ascii=False)
-    except Exception as e:
-        print(f"Error while processing additional Data: {e}")
-        return json.dumps({})
+    # Disabled heavy BeautifulSoup parsing for performance
+    return json.dumps({})
 
 def fetch_json(url: str, crawl_delay=None, check_is_pdp_only: bool = False) -> Optional[dict]:
     data = http_get(url, crawl_delay)
@@ -418,7 +389,6 @@ def check_sitemap_contains_products(sitemap_url: str, crawl_delay=None) -> bool:
         log(f"Sitemap appears to have NO product pages (0/{sample_size} samples are products)")
         return False
 
-csv_lock = threading.Lock()
 
 def check_robots_txt():
     """Check robots.txt for crawl delays and sitemap location"""
@@ -592,8 +562,7 @@ def process_product_data(
             product_info['additional_data'],
             SCRAPED_DATE
         ]
-        with csv_lock:
-            writer.writerow(row)
+        writer.writerow(row)
         with stats_lock:
             stats['products_fetched'] += 1
         log(f"Fetched product {product_info['product_id']}: {product_info['name'][:50]}...", "INFO")
@@ -607,6 +576,7 @@ def process_product_data(
 # ================= MAIN =================
 
 def main():
+    gc.disable()
     crawl_delay, robots_sitemap = check_robots_txt()
     crawl_delay = 0
     sitemap = SITEMAP_INDEX
@@ -703,41 +673,41 @@ def main():
             'errors': 0
         }
         
-        for sitemap_url in sitemaps_to_process:
-            stats['sitemaps_processed'] += 1
-            log(f"Processing sitemap {stats['sitemaps_processed']}/{len(sitemaps_to_process)}: {sitemap_url}")
-            
-            xml = load_xml(sitemap_url, crawl_delay)
-            if not xml:
-                log(f"Failed to load sitemap: {sitemap_url}", "ERROR")
-                continue
-            
-            urls = []
-            for path in [".//ns:url/ns:loc", ".//url/loc", ".//loc"]:
-                elements = xml.findall(path, ns) if "ns:" in path else xml.findall(path)
-                if elements:
-                    urls = [
-                        e.text.strip()
-                        for e in elements
-                        if e.text
-                        and not any(ext in e.text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'])
-                        and ('.html' in e.text)
-                    ]
-                    if urls:
-                        break
-            
-            if not urls:
-                log(f"No product URLs found in sitemap: {sitemap_url}", "WARNING")
-                continue
-            
-            if MAX_URLS_PER_SITEMAP > 0:
-                original_count = len(urls)
-                urls = urls[:MAX_URLS_PER_SITEMAP]
-                log(f"Limited to {len(urls)} out of {original_count} URLs")
-            else:
-                log(f"Found {len(urls)} product URLs in this sitemap")
-            
-            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            for sitemap_url in sitemaps_to_process:
+                stats['sitemaps_processed'] += 1
+                log(f"Processing sitemap {stats['sitemaps_processed']}/{len(sitemaps_to_process)}: {sitemap_url}")
+                
+                xml = load_xml(sitemap_url, crawl_delay)
+                if not xml:
+                    log(f"Failed to load sitemap: {sitemap_url}", "ERROR")
+                    continue
+                
+                urls = []
+                for path in [".//ns:url/ns:loc", ".//url/loc", ".//loc"]:
+                    elements = xml.findall(path, ns) if "ns:" in path else xml.findall(path)
+                    if elements:
+                        urls = [
+                            e.text.strip()
+                            for e in elements
+                            if e.text
+                            and not any(ext in e.text for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg'])
+                            and ('.html' in e.text)
+                        ]
+                        if urls:
+                            break
+                
+                if not urls:
+                    log(f"No product URLs found in sitemap: {sitemap_url}", "WARNING")
+                    continue
+                
+                if MAX_URLS_PER_SITEMAP > 0:
+                    original_count = len(urls)
+                    urls = urls[:MAX_URLS_PER_SITEMAP]
+                    log(f"Limited to {len(urls)} out of {original_count} URLs")
+                else:
+                    log(f"Found {len(urls)} product URLs in this sitemap")
+                
                 futures = [
                     executor.submit(
                         process_product_data,
@@ -757,8 +727,8 @@ def main():
                     except Exception as e:
                         log(f"Error in thread execution: {e}", "ERROR")
                         stats['errors'] += 1
-            
-            gc.collect()
+                
+                gc.collect()
     
     log("=" * 60)
     log("SCRAPING STATISTICS")
@@ -795,3 +765,4 @@ if __name__ == "__main__":
             log("Continuing anyway, but requests may fail...")
     
     main()
+    gc.enable()
