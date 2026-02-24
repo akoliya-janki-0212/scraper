@@ -15,10 +15,6 @@ on:
         description: "Fixed chunk count (0 = auto from urls_per_job)"
         required: true
         default: "0"
-      total_products_limit:
-        description: "Total products to process (0 = all discovered)"
-        required: true
-        default: "0"
       max_parallel_jobs:
         description: "Maximum matrix jobs running in parallel"
         required: true
@@ -47,7 +43,7 @@ jobs:
       matrix: ${{ steps.generate_matrix.outputs.matrix }}
       total_urls: ${{ steps.collect_urls.outputs.total_urls }}
       urls_file: ${{ steps.collect_urls.outputs.urls_file }}
-      effective_total_urls: ${{ steps.generate_matrix.outputs.effective_total_urls }}
+      effective_total_urls: ${{ steps.collect_urls.outputs.total_urls }}
       chunk_count: ${{ steps.generate_matrix.outputs.chunk_count }}
     steps:
       - uses: actions/checkout@v4
@@ -194,40 +190,32 @@ jobs:
           TOTAL_URLS: ${{ steps.collect_urls.outputs.total_urls }}
           URLS_PER_JOB_INPUT: ${{ github.event.inputs.urls_per_job }}
           TOTAL_CHUNKS_INPUT: ${{ github.event.inputs.total_chunks }}
-          TOTAL_PRODUCTS_LIMIT_INPUT: ${{ github.event.inputs.total_products_limit }}
         run: |
           TOTAL_URLS="${TOTAL_URLS:-0}"
           URLS_PER_JOB="$URLS_PER_JOB_INPUT"
           TOTAL_CHUNKS="$TOTAL_CHUNKS_INPUT"
-          TOTAL_PRODUCTS_LIMIT="$TOTAL_PRODUCTS_LIMIT_INPUT"
 
           if ! [[ "$TOTAL_URLS" =~ ^[0-9]+$ ]] || [ "$TOTAL_URLS" -le 0 ]; then
             echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
             echo "chunk_count=0" >> "$GITHUB_OUTPUT"
-            echo "effective_total_urls=0" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
-
-          EFFECTIVE_TOTAL_URLS="$TOTAL_URLS"
-          if [[ "$TOTAL_PRODUCTS_LIMIT" =~ ^[0-9]+$ ]] && [ "$TOTAL_PRODUCTS_LIMIT" -gt 0 ] && [ "$TOTAL_PRODUCTS_LIMIT" -lt "$TOTAL_URLS" ]; then
-            EFFECTIVE_TOTAL_URLS="$TOTAL_PRODUCTS_LIMIT"
           fi
 
           if [[ "$TOTAL_CHUNKS" =~ ^[0-9]+$ ]] && [ "$TOTAL_CHUNKS" -gt 0 ]; then
             CHUNK_COUNT="$TOTAL_CHUNKS"
-            URLS_PER_JOB=$(( (EFFECTIVE_TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
+            URLS_PER_JOB=$(( (TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
           else
             if ! [[ "$URLS_PER_JOB" =~ ^[0-9]+$ ]] || [ "$URLS_PER_JOB" -lt 1 ]; then
               URLS_PER_JOB=5000
             fi
-            CHUNK_COUNT=$(( (EFFECTIVE_TOTAL_URLS + URLS_PER_JOB - 1) / URLS_PER_JOB ))
+            CHUNK_COUNT=$(( (TOTAL_URLS + URLS_PER_JOB - 1) / URLS_PER_JOB ))
           fi
 
           MAX_MATRIX_JOBS=256
           if [ "$CHUNK_COUNT" -gt "$MAX_MATRIX_JOBS" ]; then
             echo "Requested chunk count $CHUNK_COUNT exceeds $MAX_MATRIX_JOBS; capping."
             CHUNK_COUNT="$MAX_MATRIX_JOBS"
-            URLS_PER_JOB=$(( (EFFECTIVE_TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
+            URLS_PER_JOB=$(( (TOTAL_URLS + CHUNK_COUNT - 1) / CHUNK_COUNT ))
           fi
 
           MATRIX_JSON=$(jq -cn \
@@ -243,10 +231,9 @@ jobs:
 
           echo "matrix={\"include\":$MATRIX_JSON}" >> "$GITHUB_OUTPUT"
           echo "chunk_count=$CHUNK_COUNT" >> "$GITHUB_OUTPUT"
-          echo "effective_total_urls=$EFFECTIVE_TOTAL_URLS" >> "$GITHUB_OUTPUT"
 
           echo "Total URLs from FTP file: $TOTAL_URLS"
-          echo "Total URLs to process: $EFFECTIVE_TOTAL_URLS"
+          echo "Total URLs to process: $TOTAL_URLS"
           echo "Chunk count: $CHUNK_COUNT"
           echo "URLs per job: $URLS_PER_JOB"
 
