@@ -1,4 +1,4 @@
-name: Emma Mason Scraper with Priority Fallback
+name: Emma Mason Scraper with FlareSolverr
 
 on:
   workflow_dispatch:
@@ -31,9 +31,6 @@ on:
       sample_size:
         description: "Number of URLs to sample for product checking"
         default: "5"
-      scrapy_fetch_timeout:
-        description: "Timeout for scrapy fallback fetch (seconds)"
-        default: "60"
 
 jobs:
   plan:
@@ -86,7 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Start FlareSolverr pool (last-priority fallback)
+      - name: Start FlareSolverr pool
         id: flaresolverr_pool
         run: |
           INSTANCES="${{ github.event.inputs.flaresolverr_instances }}"
@@ -153,7 +150,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 lxml cloudscraper curl_cffi scrapy
+          pip install requests beautifulsoup4 lxml
 
       - name: Create scraper file
         run: |
@@ -161,7 +158,7 @@ jobs:
           # PASTE THE COMPLETE UPDATED SCRAPER CODE FROM BELOW
           EOF
 
-      - name: Run Emma Mason scraper with prioritized fallbacks
+      - name: Run Emma Mason scraper with FlareSolverr
         id: scrape_run
         continue-on-error: true
         env:
@@ -174,12 +171,10 @@ jobs:
           REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
           GLOBAL_RATE_LIMIT: ${{ github.event.inputs.global_rate_limit }}
           SAMPLE_SIZE: ${{ github.event.inputs.sample_size }}
-          SCRAPY_FETCH_TIMEOUT: ${{ github.event.inputs.scrapy_fetch_timeout }}
           FLARESOLVERR_URL: ${{ steps.flaresolverr_pool.outputs.first_url }}
           FLARESOLVERR_URLS: ${{ steps.flaresolverr_pool.outputs.urls }}
         run: |
-          echo "Starting Emma Mason scraper with prioritized fallbacks:"
-          echo "Priority: cloudscraper -> curl_cffi -> scrapy -> flaresolverr"
+          echo "Starting Emma Mason scraper with FlareSolverr:"
           echo "CURR_URL: $CURR_URL"
           echo "SITEMAP_OFFSET: $SITEMAP_OFFSET"
           echo "MAX_SITEMAPS: $MAX_SITEMAPS"
@@ -189,7 +184,6 @@ jobs:
           echo "REQUEST_DELAY: $REQUEST_DELAY"
           echo "GLOBAL_RATE_LIMIT: $GLOBAL_RATE_LIMIT"
           echo "SAMPLE_SIZE: $SAMPLE_SIZE"
-          echo "SCRAPY_FETCH_TIMEOUT: $SCRAPY_FETCH_TIMEOUT"
           echo "FLARESOLVERR_URL: $FLARESOLVERR_URL"
           echo "FLARESOLVERR_URLS: $FLARESOLVERR_URLS"
           echo ""
@@ -358,8 +352,7 @@ jobs:
           echo "  Sitemaps/Job:  ${{ github.event.inputs.sitemaps_per_job }}"
           echo "  Total Sitemaps: ${{ github.event.inputs.total_sitemaps }}"
           echo "  Sample Size:   ${{ github.event.inputs.sample_size }}"
-          echo "  Request Strategy: cloudscraper -> curl_cffi -> scrapy -> flaresolverr"
-          echo "  FlareSolverr:  Enabled as last fallback (Dynamic Instance Pool)"
+          echo "  FlareSolverr:  Enabled (Dynamic Instance Pool)"
           echo "========================================="
           
           if [ -f "products_full.csv" ]; then

@@ -10,8 +10,6 @@ import re
 import json
 import html
 import ast
-import shutil
-import subprocess
 from typing import Optional, List, Dict, Tuple
 from bs4 import BeautifulSoup
 from datetime import datetime, timezone
@@ -19,16 +17,6 @@ from xml.etree import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
-try:
-    import cloudscraper
-except Exception:
-    cloudscraper = None
-
-try:
-    from curl_cffi import requests as curl_cffi_requests
-except Exception:
-    curl_cffi_requests = None
 
 # ================= ENV =================
 
@@ -46,8 +34,6 @@ GLOBAL_RATE_LIMIT = os.getenv("GLOBAL_RATE_LIMIT", "false").strip().lower() in (
 FLARESOLVERR_URL = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
 FLARESOLVERR_URLS_RAW = os.getenv("FLARESOLVERR_URLS", "").strip()
 FLARESOLVERR_TIMEOUT = int(os.getenv("FLARESOLVERR_TIMEOUT", "120"))  # increased
-SCRAPY_FETCH_TIMEOUT = int(os.getenv("SCRAPY_FETCH_TIMEOUT", "60"))
-ENABLE_SCRAPY_FALLBACK = os.getenv("ENABLE_SCRAPY_FALLBACK", "true").strip().lower() in ("1", "true", "yes")
 FLARESOLVERR_URLS = [
     url.strip()
     for url in FLARESOLVERR_URLS_RAW.split(",")
@@ -72,24 +58,6 @@ _thread_local = threading.local()
 _endpoint_assign_lock = threading.Lock()
 _endpoint_assign_counter = 0
 
-SCRAPY_BIN = shutil.which("scrapy")
-
-def _default_headers() -> Dict[str, str]:
-    return {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "en-US,en;q=0.9",
-        "DNT": "1",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Cache-Control": "max-age=0",
-        "Referer": CURR_URL + "/",
-    }
-
 def get_thread_flaresolverr_url() -> str:
     """Assign one FlareSolverr endpoint per worker thread."""
     global _endpoint_assign_counter
@@ -107,9 +75,9 @@ def get_thread_flaresolverr_url() -> str:
     )
     return _thread_local.flaresolverr_url
 
-def get_base_session():
+def get_flaresolverr_session():
     """Get or create a thread-local requests session with connection pooling."""
-    if not hasattr(_thread_local, "base_session"):
+    if not hasattr(_thread_local, "session"):
         session = requests.Session()
         # Mount adapter with pool size = max_workers * 2 (for safety)
         adapter = HTTPAdapter(
@@ -119,69 +87,22 @@ def get_base_session():
         )
         session.mount("http://", adapter)
         session.mount("https://", adapter)
-        _thread_local.base_session = session
-        _thread_local.headers = _default_headers()
-    return _thread_local.base_session, _thread_local.headers
-
-def get_cloudscraper_session():
-    if cloudscraper is None:
-        return None, _default_headers()
-    if not hasattr(_thread_local, "cloudscraper_session"):
-        _thread_local.cloudscraper_session = cloudscraper.create_scraper(
-            browser={"browser": "chrome", "platform": "windows", "mobile": False}
-        )
-    return _thread_local.cloudscraper_session, _default_headers()
-
-def get_curl_cffi_session():
-    if curl_cffi_requests is None:
-        return None, _default_headers()
-    if not hasattr(_thread_local, "curl_cffi_session"):
-        _thread_local.curl_cffi_session = curl_cffi_requests.Session(impersonate="chrome")
-    return _thread_local.curl_cffi_session, _default_headers()
-
-def cloudscraper_request(url: str) -> Optional[Tuple[str, int]]:
-    session, headers = get_cloudscraper_session()
-    if session is None:
-        return None, 0
-    try:
-        response = session.get(url, headers=headers, timeout=40)
-        if response.status_code == 200:
-            return response.text, 200
-        return None, response.status_code
-    except Exception as e:
-        log(f"cloudscraper error for {url}: {e}", "DEBUG")
-        return None, 0
-
-def curl_cffi_request(url: str) -> Optional[Tuple[str, int]]:
-    session, headers = get_curl_cffi_session()
-    if session is None:
-        return None, 0
-    try:
-        response = session.get(url, headers=headers, timeout=40)
-        if response.status_code == 200:
-            return response.text, 200
-        return None, response.status_code
-    except Exception as e:
-        log(f"curl_cffi error for {url}: {e}", "DEBUG")
-        return None, 0
-
-def scrapy_request(url: str) -> Optional[Tuple[str, int]]:
-    if not ENABLE_SCRAPY_FALLBACK or not SCRAPY_BIN:
-        return None, 0
-    try:
-        proc = subprocess.run(
-            [SCRAPY_BIN, "fetch", "--nolog", url],
-            capture_output=True,
-            text=True,
-            timeout=SCRAPY_FETCH_TIMEOUT
-        )
-        if proc.returncode == 0 and proc.stdout:
-            return proc.stdout, 200
-        log(f"scrapy fetch failed for {url}: {proc.stderr[-300:]}", "DEBUG")
-        return None, 0
-    except Exception as e:
-        log(f"scrapy fetch error for {url}: {e}", "DEBUG")
-        return None, 0
+        _thread_local.session = session
+        _thread_local.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+            "DNT": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "Cache-Control": "max-age=0",
+            "Referer": CURR_URL + "/",
+        }
+    return _thread_local.session, _thread_local.headers
 
 def get_flaresolverr_browser_session_id(session: requests.Session, flaresolverr_url: str) -> Optional[str]:
     """Create and cache one FlareSolverr browser session per worker thread."""
@@ -205,7 +126,7 @@ def get_flaresolverr_browser_session_id(session: requests.Session, flaresolverr_
 
 def flaresolverr_request(url: str, max_retries: int = 3) -> Optional[Tuple[str, int]]:
     """Make request through FlareSolverr using thread-local session."""
-    session, headers = get_base_session()
+    session, headers = get_flaresolverr_session()
     flaresolverr_url = get_thread_flaresolverr_url()
     flaresolverr_session_id = get_flaresolverr_browser_session_id(session, flaresolverr_url)
     
@@ -269,27 +190,7 @@ def flaresolverr_request(url: str, max_retries: int = 3) -> Optional[Tuple[str, 
     
     return None, 0
 
-def prioritized_request(url: str) -> Optional[Tuple[str, int]]:
-    """Priority order: cloudscraper -> curl_cffi -> scrapy -> FlareSolverr."""
-    methods = [
-        ("cloudscraper", cloudscraper_request),
-        ("curl_cffi", curl_cffi_request),
-        ("scrapy", scrapy_request),
-        ("flaresolverr", flaresolverr_request),
-    ]
-    last_status = 0
-    for name, fn in methods:
-        content, status = fn(url)
-        if content and status == 200:
-            if name != "flaresolverr":
-                log(f"{name} succeeded for {url}", "DEBUG")
-            return content, 200
-        if status:
-            last_status = status
-            log(f"{name} returned status {status} for {url}", "DEBUG")
-    return None, last_status
-
-# ================= REQUEST MANAGER =================
+# ================= REQUEST MANAGER (unchanged except using flaresolverr_request) =================
 
 class RequestManager:
     def __init__(self):
@@ -337,7 +238,7 @@ class RequestManager:
             return None
         
         self._respect_rate_limit(crawl_delay)
-        content, status = prioritized_request(url)
+        content, status = flaresolverr_request(url)
         
         if content and status == 200:
             return content
@@ -524,7 +425,7 @@ def check_robots_txt():
     robots_url = f"{CURR_URL}/robots.txt"
     log(f"Checking robots.txt: {robots_url}")
     
-    content, status = prioritized_request(robots_url)
+    content, status = flaresolverr_request(robots_url)
     if content and status == 200:
         lines = content.split('\n')
         crawl_delay = None
@@ -727,8 +628,7 @@ def main():
         log(f"Using default request delay: {REQUEST_DELAY_BASE} seconds")
     
     log("=" * 60)
-    log("Emma Mason Scraper with Priority Fallback (Improved Parallelism)")
-    log("Request priority: cloudscraper -> curl_cffi -> scrapy -> flaresolverr")
+    log("Emma Mason Scraper with FlareSolverr (Improved Parallelism)")
     log(f"FlareSolverr endpoints: {len(FLARESOLVERR_URLS)}")
     log(f"FlareSolverr URL list: {', '.join(FLARESOLVERR_URLS)}")
     log(f"Timestamp: {SCRAPED_DATE}")
@@ -882,20 +782,16 @@ if __name__ == "__main__":
         log("Error: CURR_URL environment variable is required", "ERROR")
         sys.exit(1)
     
-    log(f"cloudscraper available: {cloudscraper is not None}")
-    log(f"curl_cffi available: {curl_cffi_requests is not None}")
-    log(f"scrapy available: {bool(SCRAPY_BIN)}")
-
     for fs_url in FLARESOLVERR_URLS:
-        log(f"Testing FlareSolverr fallback connection at {fs_url}")
+        log(f"Testing FlareSolverr connection at {fs_url}")
         try:
             test_response = requests.post(fs_url, json={"cmd": "sessions.list"}, timeout=10)
             if test_response.status_code == 200:
-                log(f"✓ FlareSolverr fallback connection successful: {fs_url}")
+                log(f"✓ FlareSolverr connection successful: {fs_url}")
             else:
                 log(f"⚠ FlareSolverr returned status {test_response.status_code} at {fs_url}")
         except Exception as e:
             log(f"⚠ FlareSolverr connection failed at {fs_url}: {e}")
-            log("Continuing anyway; non-FlareSolverr methods may still work.")
+            log("Continuing anyway, but requests may fail...")
     
     main()
