@@ -46,6 +46,7 @@ jobs:
     outputs:
       matrix: ${{ steps.generate_matrix.outputs.matrix }}
       total_urls: ${{ steps.collect_urls.outputs.total_urls }}
+      urls_file: ${{ steps.collect_urls.outputs.urls_file }}
       effective_total_urls: ${{ steps.generate_matrix.outputs.effective_total_urls }}
       chunk_count: ${{ steps.generate_matrix.outputs.chunk_count }}
     steps:
@@ -191,7 +192,6 @@ jobs:
         id: generate_matrix
         env:
           TOTAL_URLS: ${{ steps.collect_urls.outputs.total_urls }}
-          URLS_FILE: ${{ steps.collect_urls.outputs.urls_file }}
           URLS_PER_JOB_INPUT: ${{ github.event.inputs.urls_per_job }}
           TOTAL_CHUNKS_INPUT: ${{ github.event.inputs.total_chunks }}
           TOTAL_PRODUCTS_LIMIT_INPUT: ${{ github.event.inputs.total_products_limit }}
@@ -231,17 +231,13 @@ jobs:
           fi
 
           MATRIX_JSON=$(jq -cn \
-            --arg base_url "${{ github.event.inputs.url }}" \
-            --arg urls_file "$URLS_FILE" \
             --argjson chunk_count "$CHUNK_COUNT" \
             --argjson urls_per_job "$URLS_PER_JOB" \
             '[ range(0; $chunk_count) |
               {
                 chunk_id: .,
                 offset: (. * $urls_per_job),
-                limit: $urls_per_job,
-                base_url: $base_url,
-                urls_file: $urls_file
+                limit: $urls_per_job
               }
             ]')
 
@@ -359,8 +355,8 @@ jobs:
 
       - name: Run chunk scraper
         env:
-          CURR_URL: ${{ matrix.base_url }}
-          PRODUCT_URLS_FILE: ${{ matrix.urls_file }}
+          CURR_URL: ${{ github.event.inputs.url }}
+          PRODUCT_URLS_FILE: ${{ needs.plan.outputs.urls_file }}
           URL_OFFSET: ${{ matrix.offset }}
           URL_LIMIT: ${{ matrix.limit }}
           CHUNK_ID: ${{ matrix.chunk_id }}
