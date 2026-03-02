@@ -136,16 +136,16 @@ jobs:
           FTP_BASE_DIR: ${{ secrets.FTP_PATH }}
           FILE: ${{ steps.meta.outputs.name }}
         run: |
-          sudo apt-get install -y lftp
-          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" -e "
-            set ftp:ssl-allow no;
-            set net:timeout 20;
-            set net:max-retries 2;
-            set cmd:fail-exit yes;
-            cd $FTP_BASE_DIR;
-            put $FILE;
-            bye
-          "
+          echo "Uploading $FILE to FTP..."
+
+          curl --fail \
+               --ftp-create-dirs \
+               --retry 3 \
+               --retry-delay 5 \
+               -T "$FILE" \
+               "ftp://$FTP_USER:$FTP_PASS@$FTP_HOST/$FTP_BASE_DIR/$FILE"
+
+          echo "Upload completed."
 
       - name: Archive results
         uses: actions/upload-artifact@v4
