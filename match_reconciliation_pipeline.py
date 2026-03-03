@@ -56,7 +56,7 @@ def split_multi_values(value: Any) -> list[str]:
     raw = clean_text(value)
     if not raw:
         return []
-    parts = [clean_text(p) for p in re.split(r"[,;|]+", raw)]
+    parts = [clean_text(p) for p in re.split(r"[,_;|]+", raw)]
     parts = [p for p in parts if p]
     if parts:
         return parts
@@ -239,72 +239,25 @@ def mpn_family_key(token: str) -> str:
 
 
 def partial_token_match(left: str, right: str) -> bool:
-    left_n = norm_id(left)
-    right_n = norm_id(right)
+    # Normalize by removing all non-alphanumeric characters on both sides
+    left_n = re.sub(r"[^a-z0-9]+", "", clean_text(left).lower())
+    right_n = re.sub(r"[^a-z0-9]+", "", clean_text(right).lower())
+
     if not left_n or not right_n:
         return False
+
+    # Exact match after normalization
     if left_n == right_n:
         return True
 
-    # If neither token contains digits, allow strong substring/suffix match
-    # (e.g. SAUBREYCHMARINE vs JOFAUBREYCHMARINE).
-    if not re.search(r"\d", left_n) and not re.search(r"\d", right_n):
-        # Direct containment
-        if left_n in right_n or right_n in left_n:
-            return True
-
-        # Strong common suffix (>= 6 chars)
-        common_suffix = os.path.commonprefix([left_n[::-1], right_n[::-1]])[::-1]
-        if len(common_suffix) >= 6:
-            return True
-
-        return False
-
-    left_parts = parse_mpn_token_parts(left_n)
-    right_parts = parse_mpn_token_parts(right_n)
-    if not left_parts or not right_parts:
-        return False
-
-    lpre, lnum, lsuf = left_parts
-    rpre, rnum, rsuf = right_parts
-    if lnum != rnum:
-        return False
-
-    # Do not treat plain-numeric and prefixed-numeric identifiers as partial
-    # equivalents (e.g. 04166 vs DN04166).
-    if ((not lpre and rpre) or (lpre and not rpre)) and not lsuf and not rsuf:
-        return False
-
-    # If both tokens do NOT contain numeric cores, allow strong suffix match
-    # even when prefixes differ (e.g. SAUBREYCHMARINE vs JOFAUBREYCHMARINE).
-    if not lnum and not rnum:
-        # Allow match if one full normalized token ends with the other
-        # and shared suffix length is reasonably strong (>= 6 chars).
-        if left_n.endswith(right_n) or right_n.endswith(left_n):
-            return True
-        common_suffix = os.path.commonprefix([left_n[::-1], right_n[::-1]])[::-1]
-        if len(common_suffix) >= 6:
-            return True
-        return False
-
-    # Keep prefix-aware partials to avoid unrelated numeric model collisions
-    # (e.g. CML100STE vs CKS100STE should not match).
-    if lpre and rpre and lpre != rpre and not (lpre.endswith(rpre) or rpre.endswith(lpre)):
-        return False
-
-    if not lsuf and not rsuf:
+    # Bi-directional partial containment (no min length restriction)
+    # Example:
+    # ABCXYZ vs XYZ
+    # PQA vs MNPPQA
+    if left_n in right_n or right_n in left_n:
         return True
-    if not lsuf or not rsuf:
-        return False
-    short, long = (lsuf, rsuf) if len(lsuf) <= len(rsuf) else (rsuf, lsuf)
 
-    # Allow 1-character suffix partials (e.g. 9227L vs 9227LO)
-    # but still require strict numeric core equality and bounded suffix expansion.
-    return (
-        len(short) >= 1
-        and long.startswith(short)
-        and (len(long) - len(short) <= 2)
-    )
+    return False
 
 
 def all_tokens_exact(left_tokens: list[str], right_tokens: list[str] | set[str]) -> bool:
@@ -445,6 +398,7 @@ class ReconciliationPipeline:
 
         self.cm_by_product: dict[str, dict[str, Any]] = {}
         self.cm_competitor_id: str = ""
+        self.cm_repricer_id: str = ""
 
         self.used_scrape_indices: set[int] = set()
         self.allocated_ref_urls: set[str] = set()
@@ -560,6 +514,7 @@ class ReconciliationPipeline:
                     "cat": clean_text(row.get("cat")),
                     "part_number": clean_text(row.get("part_number")),
                     "osb_url": osb_url,
+                    "system_status": clean_text(row.get("status") or row.get("data_status")),
                     "_sku": norm_id(row.get("sku")),  # legacy single-value key
                     "_web": norm_id(row.get("web_id")),  # legacy single-value key
                     "_gtin": norm_numeric_id(row.get("gtin")),  # legacy single-value key
@@ -577,6 +532,7 @@ class ReconciliationPipeline:
                     "_gtin_tokens": gtin_values,
                     "_gtin_set": set(gtin_values),
                     "_gtin_is_unique": False,
+                    "_category_tokens": token_set(row.get("cat")),
                 }
                 self.system[product_id] = sys_row
                 for token in gtin_values:
@@ -624,6 +580,7 @@ class ReconciliationPipeline:
                 )
                 ref_gtin = clean.get("Ref GTIN", "")
                 brand_label = clean.get(self.scrape_brand_col, "")
+                ref_category = clean.get("Ref Category", "")
                 mpn_tokens = id_tokens(ref_mpn)
                 gtin_values = numeric_tokens(ref_gtin)
 
@@ -635,6 +592,8 @@ class ReconciliationPipeline:
                     "_mpn": norm_id(ref_mpn),  # legacy single-value key
                     "_gtin": norm_numeric_id(ref_gtin),  # legacy single-value key
                     "_brand": norm_brand(brand_label),
+                    "_category_raw": ref_category,
+                    "_category_tokens": token_set(ref_category),
                     "_mpn_tokens": mpn_tokens,
                     "_mpn_token_set": set(mpn_tokens),
                     "_gtin_tokens": gtin_values,
@@ -669,9 +628,11 @@ class ReconciliationPipeline:
         if not self.cm_file.exists():
             self.cm_by_product = {}
             self.cm_competitor_id = ""
+            self.cm_repricer_id = ""
             return
 
         domain_comp_id_counter: Counter[str] = Counter()
+        domain_repricer_counter: Counter[str] = Counter()
         with self.cm_file.open("r", newline="", encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             for row in reader:
@@ -680,9 +641,13 @@ class ReconciliationPipeline:
                 if not cm_domain or not self.scrape_domain or self.scrape_domain not in cm_domain:
                     continue
                 comp_id = clean_text(row.get("competitor_id"))
+                repricer_id = clean_text(row.get("repricer_id"))
                 if comp_id:
                     domain_comp_id_counter[comp_id] += 1
+                if repricer_id:
+                    domain_repricer_counter[repricer_id] += 1
         self.cm_competitor_id = domain_comp_id_counter.most_common(1)[0][0] if domain_comp_id_counter else ""
+        self.cm_repricer_id = domain_repricer_counter.most_common(1)[0][0] if domain_repricer_counter else ""
 
         system_ids = set(self.system.keys())
         with self.cm_file.open("r", newline="", encoding="utf-8-sig") as f:
@@ -695,6 +660,7 @@ class ReconciliationPipeline:
                 row_comp_id = clean_text(row.get("competitor_id"))
                 row_url = clean_text(row.get("competitor_url"))
                 row_domain = extract_domain(row_url)
+                repricer_id = clean_text(row.get("repricer_id"))
 
                 if self.cm_competitor_id:
                     if row_comp_id != self.cm_competitor_id:
@@ -705,12 +671,14 @@ class ReconciliationPipeline:
                 cm = {
                     "product_id": product_id,
                     "competitor_id": row_comp_id,
+                    "repricer_id": repricer_id,
                     "competitor_url": row_url,
                     "reason": clean_text(row.get("reason")),
                     "other_reason": clean_text(row.get("other_reason")),
                     "cm_received_sku": clean_text(row.get("cm_received_sku")),
                     "competitor_name": clean_text(row.get("competitor_name")),
                     "last_update_date": clean_text(row.get("last_update_date")),
+                    "sku_mismatch": clean_text(row.get("sku_mismatch") or row.get("SKU Mismatch")),
                     "_url_fp": url_fingerprint(row_url),
                     "_path_key": path_key(row_url),
                 }
@@ -783,6 +751,8 @@ class ReconciliationPipeline:
             "brand_exact": False,
             "brand_clone": False,
             "brand_conflict": False,
+            "category_exact": False,
+            "category_partial": False,
         }
         signal = "NONE"
         remark = ""
@@ -798,36 +768,61 @@ class ReconciliationPipeline:
         part_tokens = sys_row["_part_tokens"]
 
         if comp_mpn_tokens:
-            token_sources: list[tuple[str, list[str]]] = []
-            if len(mpn_tokens) > 1:
-                # For multi-token system MPN, require full coverage against system MPN only.
-                token_sources = [("MPN", mpn_tokens)]
-            else:
-                if mpn_tokens:
-                    token_sources.append(("MPN", mpn_tokens))
-                if sku_tokens:
-                    token_sources.append(("SKU", sku_tokens))
-                if part_tokens:
-                    token_sources.append(("PART", part_tokens))
+            flags["mpn_exact_all"] = False
+            flags["mpn_partial_all"] = False
+            flags["mpn_any"] = False
 
-            exact_sources: list[str] = []
-            partial_sources: list[str] = []
-            for label, system_tokens in token_sources:
-                if all_tokens_match_strict(comp_mpn_tokens, system_tokens, partial=False):
-                    exact_sources.append(label)
-                if all_tokens_match_strict(comp_mpn_tokens, system_tokens, partial=True):
-                    partial_sources.append(label)
+            def any_match(left_tokens, right_tokens, partial=False):
+                if not left_tokens or not right_tokens:
+                    return False
 
-            primary_available = bool(mpn_tokens or sku_tokens)
-            exact_primary = any(source in {"MPN", "SKU"} for source in exact_sources)
-            partial_primary = any(source in {"MPN", "SKU"} for source in partial_sources)
-            flags["mpn_exact_all"] = bool(exact_sources) and (exact_primary or not primary_available)
-            flags["mpn_partial_all"] = bool(partial_sources) and (partial_primary or not primary_available)
+                left_norm = [norm_id(t) for t in left_tokens if norm_id(t)]
+                right_norm = [norm_id(t) for t in right_tokens if norm_id(t)]
+
+                if not left_norm or not right_norm:
+                    return False
+
+                # EXACT match allowed ONLY when both sides are single-valued
+                if not partial and len(left_norm) == 1 and len(right_norm) == 1:
+                    return left_norm[0] == right_norm[0]
+
+                # PARTIAL match allowed ONLY when both sides are single-valued
+                if partial and len(left_norm) == 1 and len(right_norm) == 1:
+                    l = left_norm[0]
+                    r = right_norm[0]
+                    return l in r or r in l
+
+                # If either side contains multiple values → do not treat as exact/partial
+                return False
+
+            # Priority 1: MPN
+            if mpn_tokens:
+                if any_match(comp_mpn_tokens, mpn_tokens, partial=False):
+                    flags["mpn_exact_all"] = True
+                    reasons.append("MPN exact match on MPN")
+                elif any_match(comp_mpn_tokens, mpn_tokens, partial=True):
+                    flags["mpn_partial_all"] = True
+                    reasons.append("MPN partial match on MPN")
+
+            # Priority 2: SKU
+            if not flags["mpn_exact_all"] and not flags["mpn_partial_all"] and sku_tokens:
+                if any_match(comp_mpn_tokens, sku_tokens, partial=False):
+                    flags["mpn_exact_all"] = True
+                    reasons.append("MPN exact match on SKU")
+                elif any_match(comp_mpn_tokens, sku_tokens, partial=True):
+                    flags["mpn_partial_all"] = True
+                    reasons.append("MPN partial match on SKU")
+
+            # Priority 3: PART NUMBER
+            if not flags["mpn_exact_all"] and not flags["mpn_partial_all"] and part_tokens:
+                if any_match(comp_mpn_tokens, part_tokens, partial=False):
+                    flags["mpn_exact_all"] = True
+                    reasons.append("MPN exact match on PART")
+                elif any_match(comp_mpn_tokens, part_tokens, partial=True):
+                    flags["mpn_partial_all"] = True
+                    reasons.append("MPN partial match on PART")
+
             flags["mpn_any"] = flags["mpn_exact_all"] or flags["mpn_partial_all"]
-            if exact_sources:
-                reasons.append(f"MPN exact full-token match on {', '.join(exact_sources)}")
-            elif partial_sources:
-                reasons.append(f"MPN partial full-token match on {', '.join(partial_sources)}")
 
         if flags["mpn_exact_all"] and flags["gtin_match"]:
             signal = "MPN_GTIN"
@@ -872,6 +867,23 @@ class ReconciliationPipeline:
             score -= 120
             reasons.append("Brand mismatch")
 
+        # Category match logic
+        sys_cat_tokens = sys_row.get("_category_tokens", set())
+        scrape_cat_tokens = row.get("_category_tokens", set())
+
+        if sys_cat_tokens and scrape_cat_tokens:
+            if sys_cat_tokens == scrape_cat_tokens:
+                flags["category_exact"] = True
+                score += 80
+                reasons.append("Category exact")
+            else:
+                intersection = len(sys_cat_tokens & scrape_cat_tokens)
+                ratio = intersection / max(len(sys_cat_tokens), len(scrape_cat_tokens))
+                if ratio >= 0.6:
+                    flags["category_partial"] = True
+                    score += 40
+                    reasons.append("Category partial")
+
         similarity = name_similarity(sys_row.get("product_name", ""), raw.get("Ref Product Name", ""))
         if similarity >= 70:
             score += 90
@@ -890,6 +902,13 @@ class ReconciliationPipeline:
         else:
             confidence = "LOW"
 
+        # Upgrade partial MPN to HIGH if brand is exact
+        if signal == "MPN_PARTIAL" and flags.get("brand_exact"):
+            confidence = "HIGH"
+
+        # Category cannot override strong mismatch
+        if flags["category_partial"] and flags["brand_conflict"] and signal not in {"MPN_GTIN", "MPN", "GTIN"}:
+            confidence = "LOW"
         if flags["brand_conflict"] and signal not in {"MPN_GTIN", "MPN", "GTIN"}:
             confidence = "LOW"
 
@@ -966,6 +985,8 @@ class ReconciliationPipeline:
                 -self.signal_rank(c.signal),
                 -int(c.flags["brand_exact"]),
                 -int(c.flags["brand_clone"]),
+                -int(c.flags.get("category_exact", False)),
+                -int(c.flags.get("category_partial", False)),
                 -c.name_similarity,
                 c.idx,
             )
@@ -1127,8 +1148,12 @@ class ReconciliationPipeline:
         cm_url = cm_row.get("competitor_url", "") if cm_row else ""
         cm_reason = cm_row.get("reason", "") if cm_row else ""
         cm_competitor_id = cm_row.get("competitor_id", "") if cm_row else ""
+        cm_repricer_id = cm_row.get("repricer_id", "") if cm_row else ""
+        cm_sku_mismatch = cm_row.get("sku_mismatch", "") if cm_row else ""
         if not cm_competitor_id:
             cm_competitor_id = self.cm_competitor_id
+        if not cm_repricer_id:
+            cm_repricer_id = self.cm_repricer_id
 
         if existing_state == "CM_URL_MATCH_CORRECT":
             decision = "KEEP_EXISTING"
@@ -1151,6 +1176,7 @@ class ReconciliationPipeline:
                     {
                         "product_id": pid,
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "type": "update",
                         "source": "CM",
                         "is_issue": "Approved",
@@ -1187,6 +1213,7 @@ class ReconciliationPipeline:
                     {
                         "product_id": pid,
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "sku": sys_row.get("sku", ""),
                         "ref_sku": best_ref_sku,
                         "ref_url": best_url,
@@ -1224,6 +1251,7 @@ class ReconciliationPipeline:
                 self.wrong_no_replacement_rows.append(
                     {
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "product_id": pid,
                         "sku": sys_row.get("sku", ""),
                         "brand_label": sys_row.get("brand_label", ""),
@@ -1244,9 +1272,12 @@ class ReconciliationPipeline:
                 self.wrong_no_replacement_rows.append(
                     {
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "product_id": pid,
                         "sku": sys_row.get("sku", ""),
                         "brand_label": sys_row.get("brand_label", ""),
+                        "system_status": sys_row.get("system_status", ""),
+                            "sku_mismatch": cm_sku_mismatch,
                         "cm_url": cm_url,
                         "cm_reason": cm_reason,
                         "best_candidate_url": "",
@@ -1264,6 +1295,7 @@ class ReconciliationPipeline:
                         {
                             "product_id": pid,
                             "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
                             "sku": sys_row.get("sku", ""),
                             "ref_sku": best_ref_sku,
                             "ref_url": best_url,
@@ -1286,6 +1318,7 @@ class ReconciliationPipeline:
                     self.manual_review_rows.append(
                         {
                             "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
                             "product_id": pid,
                             "sku": sys_row.get("sku", ""),
                             "cm_url": cm_url,
@@ -1300,9 +1333,12 @@ class ReconciliationPipeline:
                     self.wrong_no_replacement_rows.append(
                         {
                             "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
                             "product_id": pid,
                             "sku": sys_row.get("sku", ""),
                             "brand_label": sys_row.get("brand_label", ""),
+                            "system_status": sys_row.get("system_status", ""),
+                            "sku_mismatch": cm_sku_mismatch,
                             "cm_url": cm_url,
                             "cm_reason": cm_reason,
                             "best_candidate_url": best_url,
@@ -1317,6 +1353,7 @@ class ReconciliationPipeline:
                     self.manual_review_rows.append(
                         {
                             "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
                             "product_id": pid,
                             "sku": sys_row.get("sku", ""),
                             "cm_url": cm_url,
@@ -1331,9 +1368,12 @@ class ReconciliationPipeline:
                     self.wrong_no_replacement_rows.append(
                         {
                             "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
                             "product_id": pid,
                             "sku": sys_row.get("sku", ""),
                             "brand_label": sys_row.get("brand_label", ""),
+                            "system_status": sys_row.get("system_status", ""),
+                            "sku_mismatch": cm_sku_mismatch,
                             "cm_url": cm_url,
                             "cm_reason": cm_reason,
                             "best_candidate_url": best_url,
@@ -1354,6 +1394,7 @@ class ReconciliationPipeline:
                     {
                         "product_id": pid,
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "sku": sys_row.get("sku", ""),
                         "ref_sku": best_ref_sku,
                         "ref_url": best_url,
@@ -1376,11 +1417,14 @@ class ReconciliationPipeline:
                 self.crawl_retry_rows.append(
                     {
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "product_id": pid,
                         "sku": sys_row.get("sku", ""),
                         "mpn": sys_row.get("mpn", ""),
                         "gtin": sys_row.get("gtin", ""),
                         "brand_label": sys_row.get("brand_label", ""),
+                        "system_status": sys_row.get("system_status", ""),
+                            "sku_mismatch": cm_sku_mismatch,
                         "existing_url": cm_url,
                         "retry_query": f"{sys_row.get('brand_label','')} {sys_row.get('mpn','')}".strip(),
                         "miss_count": miss_count,
@@ -1397,9 +1441,12 @@ class ReconciliationPipeline:
                 self.wrong_no_replacement_rows.append(
                     {
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "product_id": pid,
                         "sku": sys_row.get("sku", ""),
                         "brand_label": sys_row.get("brand_label", ""),
+                        "system_status": sys_row.get("system_status", ""),
+                            "sku_mismatch": cm_sku_mismatch,
                         "cm_url": cm_url,
                         "cm_reason": "",
                         "best_candidate_url": "",
@@ -1414,6 +1461,7 @@ class ReconciliationPipeline:
                     {
                         "product_id": pid,
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "sku": sys_row.get("sku", ""),
                         "ref_sku": best_ref_sku,
                         "ref_url": best_url,
@@ -1435,6 +1483,7 @@ class ReconciliationPipeline:
                 self.manual_review_rows.append(
                     {
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "product_id": pid,
                         "sku": sys_row.get("sku", ""),
                         "cm_url": "",
@@ -1448,6 +1497,7 @@ class ReconciliationPipeline:
                 self.manual_review_rows.append(
                     {
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "product_id": pid,
                         "sku": sys_row.get("sku", ""),
                         "cm_url": "",
@@ -1461,6 +1511,7 @@ class ReconciliationPipeline:
                 self.manual_review_rows.append(
                     {
                         "competitor_id": cm_competitor_id,
+                        "repricer_id": cm_repricer_id,
                         "product_id": pid,
                         "sku": sys_row.get("sku", ""),
                         "cm_url": "",
@@ -1476,14 +1527,17 @@ class ReconciliationPipeline:
         self.report_rows.append(
             {
                 "competitor_id": cm_competitor_id,
+                "repricer_id": cm_repricer_id,
                 "product_id": pid,
                 "sku": sys_row.get("sku", ""),
                 "our_mpn": sys_row.get("mpn", ""),
                 "our_gtin": sys_row.get("gtin", ""),
                 "our_brand": sys_row.get("brand_label", ""),
                 "our_category": sys_row.get("cat", ""),
+                "system_status": sys_row.get("system_status", ""),
                 "existing_competitor_url": cm_url,
                 "existing_reason": cm_reason,
+                "sku_mismatch": cm_sku_mismatch,
                 "existing_state": existing_state,
                 "best_candidate_url": best_url,
                 "best_candidate_name": best_name,
@@ -1675,13 +1729,16 @@ class ReconciliationPipeline:
         match_report_headers = [
             "product_id",
             "competitor_id",
+            "repricer_id",
             "sku",
             "our_mpn",
             "our_gtin",
             "our_brand",
             "our_category",
+            "system_status",
             "existing_competitor_url",
             "existing_reason",
+            "sku_mismatch",
             "existing_state",
             "best_candidate_url",
             "best_candidate_name",
@@ -1699,6 +1756,7 @@ class ReconciliationPipeline:
         new_update_headers = [
             "product_id",
             "competitor_id",
+            "repricer_id",
             "sku",
             "ref_sku",
             "ref_url",
@@ -1710,22 +1768,26 @@ class ReconciliationPipeline:
             "remark",
             "existing_url",
         ]
-        approve_headers = ["product_id", "competitor_id", "type", "source", "is_issue"]
+        approve_headers = ["product_id", "competitor_id", "repricer_id", "type", "source", "is_issue"]
         wrong_headers = [
             "product_id",
             "competitor_id",
+            "repricer_id",
             "sku",
             "brand_label",
+            "system_status",
             "cm_url",
             "cm_reason",
+            "sku_mismatch",
             "best_candidate_url",
             "best_candidate_score",
             "best_candidate_confidence",
         ]
-        manual_headers = ["product_id", "competitor_id", "sku", "cm_url", "cm_reason", "top_candidates"]
+        manual_headers = ["product_id", "competitor_id", "repricer_id", "sku", "cm_url", "cm_reason", "top_candidates"]
         retry_headers = [
             "product_id",
             "competitor_id",
+            "repricer_id",
             "sku",
             "mpn",
             "gtin",
