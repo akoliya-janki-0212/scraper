@@ -101,7 +101,7 @@ def setup_driver():
 
     
     # driver = uc.Chrome(options=options)
-    driver = uc.Chrome(options=options,version_main=144)
+    driver = uc.Chrome(options=options,version_main=146)
     return driver
 
 def detects_recaptcha(driver):

@@ -56,9 +56,9 @@ jobs:
         include: ${{ fromJson(needs.plan.outputs.matrix) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
           cache: "pip"
@@ -133,7 +133,7 @@ jobs:
 
       - name: Upload chunk results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: chunk-${{ matrix.chunk_id }}
           path: output/
@@ -148,9 +148,9 @@ jobs:
       final_remaining_file: ${{ steps.merge_results.outputs.final_remaining_file }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.10"
 
@@ -424,7 +424,7 @@ jobs:
 
       - name: Upload merged artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: merged-round-depth-${{ github.event.inputs.run_depth || '1' }}
           path: |
