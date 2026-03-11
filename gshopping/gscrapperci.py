@@ -110,6 +110,9 @@ def install_matching_chromedriver():
 def setup_driver():
     time.sleep(2)
     options = uc.ChromeOptions()
+    chrome_bin = os.environ.get("CHROME_BIN")
+    if chrome_bin:
+        options.binary_location = chrome_bin
     
     # Comment out for local testing to see browser
     # options.add_argument("--headless=new")

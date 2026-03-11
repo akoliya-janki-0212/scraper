@@ -63,7 +63,7 @@ jobs:
           python-version: "3.10"
           cache: "pip"
 
-      - name: Install Chrome and dependencies
+      - name: Install Chrome dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -90,9 +90,20 @@ jobs:
           wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
           sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
           sudo apt-get update
-          sudo apt-get install -y google-chrome-stable=146.0.7680.72-1
-          sudo apt-mark hold google-chrome-stable
 
+      - name: Download fixed Google Chrome 146
+        run: |
+          CHROME_VERSION=146.0.7680.71
+          DOWNLOAD_DIR=/tmp/chrome146
+          ZIP_PATH=/tmp/chrome-${CHROME_VERSION}.zip
+          mkdir -p "$DOWNLOAD_DIR"
+          wget -qO "$ZIP_PATH" "https://edgedl.me.gvt1.com/edgedl/chrome/chrome-for-testing/${CHROME_VERSION}/linux64/chrome-linux64.zip"
+          unzip -q "$ZIP_PATH" -d "$DOWNLOAD_DIR"
+          sudo rm -rf /opt/google-chrome-146
+          sudo mv "${DOWNLOAD_DIR}/chrome-linux64" "/opt/google-chrome-${CHROME_VERSION}"
+          sudo ln -sf "/opt/google-chrome-${CHROME_VERSION}/chrome" /usr/bin/google-chrome-stable
+          sudo chmod +x "/opt/google-chrome-${CHROME_VERSION}/chrome"
+          echo "CHROME_BIN=/opt/google-chrome-${CHROME_VERSION}/chrome" >> "$GITHUB_ENV"
           google-chrome-stable --version
 
       - name: Install Python dependencies
