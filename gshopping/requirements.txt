@@ -4,4 +4,3 @@ beautifulsoup4==4.12.2
 requests==2.31.0
 pandas==2.0.3
 fake-useragent==1.4.0
-chromedriver-autoinstaller==0.6.4
