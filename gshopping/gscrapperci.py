@@ -149,11 +149,11 @@ def setup_driver():
         service = Service(driver_path)
         driver = uc.Chrome(options=options, service=service)
     else:
-        chrome_version = get_chrome_major_version()
-        if chrome_version:
-            driver = uc.Chrome(options=options, version_main=chrome_version)
-        else:
-            driver = uc.Chrome(options=options)
+        # chrome_version = get_chrome_major_version()
+        # if chrome_version:
+        driver = uc.Chrome(options=options, version_main=146)
+        # else:
+            # driver = uc.Chrome(options=options)
     return driver
 
 def detects_recaptcha(driver):
