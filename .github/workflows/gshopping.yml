@@ -115,7 +115,8 @@ jobs:
           unzip -q "$ZIP_PATH" -d /tmp
           sudo rm -rf "$DRIVER_DIR"
           sudo mkdir -p "$DRIVER_DIR"
-          sudo mv /tmp/chromedriver-linux64 "$DRIVER_DIR"
+          sudo mv /tmp/chromedriver-linux64/chromedriver "$DRIVER_DIR/"
+          sudo rm -rf /tmp/chromedriver-linux64
           sudo chmod +x "$DRIVER_DIR/chromedriver"
           echo "CHROMEDRIVER_BIN=${DRIVER_DIR}/chromedriver" >> "$GITHUB_ENV"
           "$DRIVER_DIR/chromedriver" --version
