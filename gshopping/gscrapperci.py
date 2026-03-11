@@ -19,6 +19,7 @@ import argparse
 import re
 import shutil
 from urllib.parse import urlparse, unquote
+import subprocess
 
 PRODUCT_FINAL_COLUMNS = [
     "product_id",
@@ -65,6 +66,23 @@ except ImportError:
             print("Captcha solving module not available. Please install solvecaptcha.")
             return "failed"
 
+def get_chrome_major_version():
+    try:
+        result = subprocess.run(
+            ["google-chrome-stable", "--version"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        version_output = result.stdout.strip()
+        match = re.search(r"(\d+)(?:\.|$)", version_output)
+        if match:
+            return int(match.group(1))
+    except Exception as exc:
+        print(f"Unable to parse Chrome version: {exc}")
+    return None
+
+
 def setup_driver():
     time.sleep(2)
     options = uc.ChromeOptions()
@@ -100,8 +118,11 @@ def setup_driver():
     options.add_argument(f"user-agent={random.choice(user_agents)}")
 
     
-    # driver = uc.Chrome(options=options)
-    driver = uc.Chrome(options=options,version_main=146)
+    chrome_version = get_chrome_major_version()
+    if chrome_version:
+        driver = uc.Chrome(options=options, version_main=chrome_version)
+    else:
+        driver = uc.Chrome(options=options)
     return driver
 
 def detects_recaptcha(driver):
