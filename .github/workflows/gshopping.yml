@@ -167,7 +167,8 @@ jobs:
           retention-days: 2
 
   merge:
-    # needs: scrape
+    needs: scrape
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     outputs:
       has_remaining: ${{ steps.merge_results.outputs.has_remaining }}
