@@ -23,6 +23,11 @@ on:
         required: true
         default: "10"
         type: string
+      uniquefolder_id:
+        description: "Unique folder name for this run to avoid conflicts (e.g. timestamp or random string)"
+        required: true
+        default: "1"
+        type: string
 
 permissions:
   contents: read
@@ -202,6 +207,7 @@ jobs:
           FTP_PATH: ${{ secrets.FTP_PATH }}
           RUN_DEPTH: ${{ github.event.inputs.run_depth || '1' }}
           MAX_DEPTH: ${{ github.event.inputs.max_depth || '10' }}
+          UNIQUEFOLDER_ID: ${{ github.event.inputs.uniquefolder_id || '1' }}
         run: |
           python - <<'PY'
           import os
@@ -216,6 +222,7 @@ jobs:
           ftp_path = os.environ.get("FTP_PATH", "/scrap/")
           run_depth = int(os.environ.get("RUN_DEPTH", "1"))
           max_depth = int(os.environ.get("MAX_DEPTH", "10"))
+          uniquefolder_id = int(os.environ.get("UNIQUEFOLDER_ID", "1"))
           PRODUCT_FINAL_COLUMNS = [
               "product_id",
               "web_id",
@@ -393,7 +400,7 @@ jobs:
 
           product_frames = [df for df in [prev_products_df, round_products_df] if df is not None and not df.empty]
           seller_frames = [df for df in [prev_sellers_df, round_sellers_df] if df is not None and not df.empty]
-          final_subdir = f"gshoping/{datetime.utcnow().strftime('%Y-%m-%d')}"
+          final_subdir = f"gshoping/{uniquefolder_id}"
 
           if product_frames:
               final_products_df = pd.concat(product_frames, ignore_index=True)
