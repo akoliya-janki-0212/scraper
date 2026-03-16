@@ -11,7 +11,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 import time
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, WebDriverException, SessionNotCreatedException
 import undetected_chromedriver as uc
 import csv
 import traceback
@@ -66,50 +66,111 @@ except ImportError:
             print("Captcha solving module not available. Please install solvecaptcha.")
             return "failed"
 
-def setup_driver():
-    time.sleep(2)
-    options = uc.ChromeOptions()
-    chrome_bin = os.environ.get("CHROME_BIN")
-    if chrome_bin:
-        options.binary_location = chrome_bin
-    
-    # Comment out for local testing to see browser
-    # options.add_argument("--headless=new")
-    
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-popup-blocking")
-    options.add_argument("--disable-logging")
-    options.add_argument("--log-level=3")
-    options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("--disable-background-timer-throttling")
-    options.add_argument("--disable-backgrounding-occluded-windows")
-    options.add_argument("--disable-ipc-flooding-protection")
-    options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
-    options.add_argument("--disable-renderer-backgrounding")
-    options.add_argument("--disable-features=IsolateOrigins,site-per-process")
-    options.add_argument("--disable-site-isolation-trials")
+def setup_driver(max_attempts=3, base_delay=4):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        driver = None
+        try:
+            time.sleep(2)
+            options = uc.ChromeOptions()
+            chrome_bin = os.environ.get("CHROME_BIN")
+            if chrome_bin:
+                options.binary_location = chrome_bin
 
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-    ]
-    options.add_argument(f"user-agent={random.choice(user_agents)}")
+            # Comment out for local testing to see browser
+            # options.add_argument("--headless=new")
 
-    driver_path = os.environ.get("CHROMEDRIVER_BIN")
-    if driver_path:
-        service = Service(driver_path)
-        driver = uc.Chrome(options=options, service=service)
+            options.add_argument("--start-maximized")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-infobars")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-popup-blocking")
+            options.add_argument("--disable-logging")
+            options.add_argument("--log-level=3")
+            options.add_argument("--remote-debugging-port=9222")
+            options.add_argument("--disable-background-timer-throttling")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-ipc-flooding-protection")
+            options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+            options.add_argument("--disable-renderer-backgrounding")
+            options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+            options.add_argument("--disable-site-isolation-trials")
+
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            ]
+            options.add_argument(f"user-agent={random.choice(user_agents)}")
+
+            driver_path = os.environ.get("CHROMEDRIVER_BIN")
+            if driver_path:
+                service = Service(driver_path)
+                driver = uc.Chrome(options=options, service=service)
+            else:
+                driver = uc.Chrome(options=options, version_main=146)
+            return driver
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            print(f"Driver start failed (attempt {attempt}/{max_attempts}): {msg}")
+            try:
+                if driver:
+                    driver.quit()
+            except Exception:
+                pass
+            if attempt < max_attempts:
+                time.sleep(base_delay * attempt + random.uniform(0, 2))
+    if last_err:
+        raise last_err
+    raise RuntimeError("Driver start failed with unknown error")
+
+def is_driver_connectivity_error(err):
+    try:
+        msg = str(err).lower()
+    except Exception:
+        return False
+    return (
+        "chrome not reachable" in msg
+        or "cannot connect to chrome" in msg
+        or "disconnected" in msg
+        or "session not created" in msg
+    )
+
+def build_error_result(product_id, keyword, url, message, status="error"):
+    return {
+        'product_id': product_id,
+        'keyword': keyword,
+        'url': url,
+        'last_response': message,
+        'status': status,
+        'last_fetched_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'product_url': '',
+        'seller': '',
+        'product_name': '',
+        'cid': '',
+        'pid': '',
+        'osb_position': 0,
+        'osb_id': '',
+        'seller_count': 0,
+        'competitors': []
+    }
+
+def save_remaining_df(df, chunk_id, round_id, output_dir, reason=None):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(output_dir, exist_ok=True)
+    csv3_filename = f"gshopping_remaining_round{round_id}_chunk{chunk_id}_{timestamp}.csv"
+    csv3_path = os.path.join(output_dir, csv3_filename)
+    df.to_csv(csv3_path, index=False)
+    if reason:
+        print(f"✓ Saved remaining rows: {csv3_filename} ({reason})")
     else:
-        driver = uc.Chrome(options=options, version_main=146)
-    return driver
+        print(f"✓ Saved remaining rows: {csv3_filename}")
+    return csv3_path, len(df)
 
 def detects_recaptcha(driver):
     """Detect if reCAPTCHA is present on the page"""
@@ -733,6 +794,7 @@ def split_dataframe_to_chunk_files(df, output_dir, total_chunks, prefix):
 
 def process_chunk(chunk_file, chunk_id, total_chunks, round_id=1, output_dir='output'):
     """Process a chunk of products"""
+    df = None
     try:
         # Read chunk file
         df = pd.read_csv(chunk_file)
@@ -755,53 +817,102 @@ def process_chunk(chunk_file, chunk_id, total_chunks, round_id=1, output_dir='ou
         seller_results = []
         remaining_results = []
         
-        # Setup driver
-        driver = setup_driver()
-        
-        # Process each product
-        for index, row in df.iterrows():
-            product_id = row['product_id']
-            web_id = row['web_id']
-            keyword = row['keyword']
-            url = row['url']
-            osb_url = row['osb_url']
-            name = row['name']
-            mpnsku = row['mpn_sku']
-            gtin = row['gtin']
-            brand = row['brand']
-            cat = row['category']
-            
-            print(f"\nProcessing {index+1}/{len(df)}: Product ID {product_id}")
-            
-            # Scrape product
-            scraped_data = scrape_product(driver, product_id, keyword, url, osb_url)
-            
-            # Add original fields back
-            scraped_data['web_id'] = web_id
-            scraped_data['keyword'] = keyword
-            scraped_data['osb_url'] = osb_url
-            scraped_data['name'] = name
-            scraped_data['mpn_sku'] = mpnsku
-            scraped_data['gtin'] = gtin
-            scraped_data['brand'] = brand
-            scraped_data['category'] = cat
-            
-            # Add to results
-            product_results.append(scraped_data)
-            seller_results.extend(scraped_data['competitors'])
-            if str(scraped_data.get('status', '')).strip().lower() in {'captcha_failed', 'error'}:
-                remaining_row = {
-                    col: ('' if pd.isna(row[col]) else row[col])
-                    for col in df.columns
+        # Setup driver with retry
+        driver = None
+        try:
+            driver = setup_driver(max_attempts=3, base_delay=5)
+        except Exception as e:
+            print(f"Driver setup failed for chunk {chunk_id}: {str(e)}")
+            traceback.print_exc()
+            if is_driver_connectivity_error(e):
+                remaining_path, remaining_rows = save_remaining_df(
+                    df, chunk_id, round_id, output_dir, reason="driver_setup_failed"
+                )
+                return {
+                    "success": True,
+                    "product_file": None,
+                    "seller_file": None,
+                    "remaining_file": remaining_path,
+                    "product_rows": 0,
+                    "seller_rows": 0,
+                    "remaining_rows": remaining_rows,
                 }
-                remaining_results.append(remaining_row)
-            
-            # Sleep between products
-            if index < len(df) - 1:
-                time.sleep(random.uniform(1,3))
+            raise
         
-        # Close driver
-        driver.quit()
+        try:
+            # Process each product
+            for index, row in df.iterrows():
+                product_id = row['product_id']
+                web_id = row['web_id']
+                keyword = row['keyword']
+                url = row['url']
+                osb_url = row['osb_url']
+                name = row['name']
+                mpnsku = row['mpn_sku']
+                gtin = row['gtin']
+                brand = row['brand']
+                cat = row['category']
+                
+                print(f"\nProcessing {index+1}/{len(df)}: Product ID {product_id}")
+                
+                # Scrape product
+                try:
+                    scraped_data = scrape_product(driver, product_id, keyword, url, osb_url)
+                except Exception as e:
+                    print(f"Error scraping product {product_id}: {str(e)}")
+                    traceback.print_exc()
+                    scraped_data = None
+                    if is_driver_connectivity_error(e):
+                        try:
+                            if driver:
+                                driver.quit()
+                        except Exception:
+                            pass
+                        try:
+                            driver = setup_driver(max_attempts=3, base_delay=5)
+                            scraped_data = scrape_product(driver, product_id, keyword, url, osb_url)
+                        except Exception as e2:
+                            print(f"Retry after driver restart failed: {str(e2)}")
+                            traceback.print_exc()
+                            scraped_data = build_error_result(
+                                product_id, keyword, url,
+                                f"driver_error: {str(e2)[:160]}"
+                            )
+                    if scraped_data is None:
+                        scraped_data = build_error_result(
+                            product_id, keyword, url,
+                            f"scrape_error: {str(e)[:160]}"
+                        )
+                
+                # Add original fields back
+                scraped_data['web_id'] = web_id
+                scraped_data['keyword'] = keyword
+                scraped_data['osb_url'] = osb_url
+                scraped_data['name'] = name
+                scraped_data['mpn_sku'] = mpnsku
+                scraped_data['gtin'] = gtin
+                scraped_data['brand'] = brand
+                scraped_data['category'] = cat
+                
+                # Add to results
+                product_results.append(scraped_data)
+                seller_results.extend(scraped_data.get('competitors', []))
+                if str(scraped_data.get('status', '')).strip().lower() in {'captcha_failed', 'error'}:
+                    remaining_row = {
+                        col: ('' if pd.isna(row[col]) else row[col])
+                        for col in df.columns
+                    }
+                    remaining_results.append(remaining_row)
+                
+                # Sleep between products
+                if index < len(df) - 1:
+                    time.sleep(random.uniform(1,3))
+        finally:
+            try:
+                if driver:
+                    driver.quit()
+            except Exception:
+                pass
         
         # Keep only non-remaining results in round outputs.
         completed_product_results = [
@@ -900,6 +1011,19 @@ def process_chunk(chunk_file, chunk_id, total_chunks, round_id=1, output_dir='ou
     except Exception as e:
         print(f"Error processing chunk {chunk_id}: {str(e)}")
         traceback.print_exc()
+        if df is not None and is_driver_connectivity_error(e):
+            remaining_path, remaining_rows = save_remaining_df(
+                df, chunk_id, round_id, output_dir, reason="driver_connectivity_error"
+            )
+            return {
+                "success": True,
+                "product_file": None,
+                "seller_file": None,
+                "remaining_file": remaining_path,
+                "product_rows": 0,
+                "seller_rows": 0,
+                "remaining_rows": remaining_rows,
+            }
         return {
             "success": False,
             "product_file": None,
