@@ -497,7 +497,6 @@ jobs:
 
   cleanup_depth_files:
     needs: [merge, dispatch_next_round]
-    if: ${{ always() && needs.dispatch_next_round.result == 'skipped' }}
     runs-on: ubuntu-latest
 
     steps:
