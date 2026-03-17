@@ -222,7 +222,11 @@ jobs:
           ftp_path = os.environ.get("FTP_PATH", "/scrap/")
           run_depth = int(os.environ.get("RUN_DEPTH", "1"))
           max_depth = int(os.environ.get("MAX_DEPTH", "10"))
-          uniquefolder_id = int(os.environ.get("UNIQUEFOLDER_ID", "1"))
+          raw_unique_id = os.environ.get("UNIQUEFOLDER_ID", "1")
+          # Keep folder names filesystem/FTP friendly and allow non-numeric IDs.
+          uniquefolder_id = "".join(
+              c if (c.isalnum() or c in "-_") else "_" for c in str(raw_unique_id).strip()
+          ) or "1"
           PRODUCT_FINAL_COLUMNS = [
               "product_id",
               "web_id",
@@ -486,6 +490,7 @@ jobs:
             const totalChunks = '${{ github.event.inputs.total_chunks || '20' }}';
             const maxDepth = '${{ github.event.inputs.max_depth || '10' }}';
             const nextInput = '${{ needs.merge.outputs.next_input_filename }}';
+            const uniqueId = '${{ github.event.inputs.uniquefolder_id || '1' }}';
 
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -497,6 +502,7 @@ jobs:
                 total_chunks: totalChunks,
                 run_depth: String(nextDepth),
                 max_depth: maxDepth,
+                uniquefolder_id: uniqueId,
               },
             });
 
@@ -504,6 +510,7 @@ jobs:
 
   cleanup_depth_files:
     needs: [merge, dispatch_next_round]
+    if: ${{ always() && needs.dispatch_next_round.result == 'skipped' }}
     runs-on: ubuntu-latest
 
     steps:
