@@ -1,4 +1,4 @@
-name: Parallel Sitemap Scraper OVS/BBB (Enhanced v1.3)
+name: GraphQl Scrapper
 
 on:
   workflow_dispatch:
@@ -6,15 +6,7 @@ on:
       url:
         description: "Base site URL"
         required: true
-        default: "https://www.overstock.com"
-      api_url:
-        description: "API base URL"
-        required: true
-        default: "https://www.overstock.com/api/product"
-      bbb_api_url:
-        description: "API base URL for BBB"
-        required: true
-        default: "https://api.bedbathandbeyond.com/options"
+        default: "https://www.homedepot.com"
       total_sitemaps:
         description: "Total sitemaps to process (0 = auto)"
         default: "0"
@@ -30,6 +22,16 @@ on:
       request_delay:
         description: "Delay between requests (seconds)"
         default: "1.0"
+      graphql_url:
+        description: "GraphQL endpoint URL"
+        required: true
+        default: "https://apionline.homedepot.com/federation-gateway/graphql?opname=productClientOnlyProduct"
+      store_id:
+        description: "Store ID for pricing/availability context"
+        default: "1710"
+      zip_code:
+        description: "ZIP code for pricing/availability context"
+        default: "96913"
 
 jobs:
   plan:
@@ -52,8 +54,6 @@ jobs:
           TOTAL=${{ github.event.inputs.total_sitemaps }}
           PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
           URL="${{ github.event.inputs.url }}"
-          API_URL="${{ github.event.inputs.api_url }}"
-          BBB_API_URL="${{ github.event.inputs.bbb_api_url }}"
           
           # If total is 0, use a default value for Overstock
           if [ "$TOTAL" -eq 0 ]; then
@@ -68,7 +68,7 @@ jobs:
           MATRIX="["
           for ((i=0;i<JOBS;i++)); do
             OFFSET=$(( i * PER_JOB ))
-            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\",\"api_url\":\"$API_URL\",\"bbb_api_url\":\"$BBB_API_URL\"},"
+            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\"},"
           done
           MATRIX="${MATRIX%,}]"
           
@@ -96,31 +96,34 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests cloudscraper curl_cffi
 
-      - name: Run Overstock scraper
+      - name: Run GraphQl Scrapper
         env:
           CURR_URL: ${{ matrix.url }}
-          API_BASE_URL: ${{ matrix.api_url }}
-          BBB_API_BASE_URL: ${{ matrix.bbb_api_url }}
           SITEMAP_OFFSET: ${{ matrix.offset }}
           MAX_SITEMAPS: ${{ matrix.limit }}
           MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
           MAX_WORKERS: ${{ github.event.inputs.max_workers }}
           REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
+          GRAPHQL_URL: ${{ github.event.inputs.graphql_url }}
+          STORE_ID: ${{ github.event.inputs.store_id }}
+          ZIP_CODE: ${{ github.event.inputs.zip_code }}
         run: |
-          echo "Starting Overstock scraper with configuration:"
+          echo "Starting GraphQl Scrapper with configuration:"
           echo "CURR_URL: $CURR_URL"
-          echo "API_BASE_URL: $API_BASE_URL"
           echo "SITEMAP_OFFSET: $SITEMAP_OFFSET"
           echo "MAX_SITEMAPS: $MAX_SITEMAPS"
           echo "MAX_URLS_PER_SITEMAP: $MAX_URLS_PER_SITEMAP"
           echo "MAX_WORKERS: $MAX_WORKERS"
           echo "REQUEST_DELAY: $REQUEST_DELAY"
+          echo "GRAPHQL_URL: $GRAPHQL_URL"
+          echo "STORE_ID: $STORE_ID"
+          echo "ZIP_CODE: $ZIP_CODE"
           echo ""
           
-          # Run the Overstock scraper
-          python ovs-bbb/ovr.py
+          # Run the GraphQl Scrapper
+          python graphql/gql.py
           
           # List output files
           echo ""
@@ -231,8 +234,6 @@ jobs:
         run: |
           SITE_NAME="${{ needs.plan.outputs.site_name }}"
           SITE_URL="${{ github.event.inputs.url }}"
-          API_URL="${{ github.event.inputs.api_url }}"
-          BBB_API_URL="${{ github.event.inputs.bbb_api_url }}"
           OUTPUT_FILE="${{ steps.meta.outputs.name }}"
           FILE_COUNT="${{ steps.merge_csv.outputs.file_count }}"
           TOTAL_ROWS="${{ steps.merge_csv.outputs.final_rows }}"
@@ -242,8 +243,6 @@ jobs:
           echo "========================================="
           echo "Site Name:       $SITE_NAME"
           echo "Site URL:        $SITE_URL"
-          echo "API URL:         $API_URL"
-          echo "BBB API URL:     $BBB_API_URL"
           echo "Output File:     $OUTPUT_FILE"
           echo "Total Files:     $FILE_COUNT chunks"
           echo "Total Products:  $TOTAL_ROWS rows"

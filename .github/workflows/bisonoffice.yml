@@ -1,0 +1,274 @@
+name: Parallel Sitemap Scraper - bisonoffice
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Base site URL"
+        required: true
+        default: "https://www.bisonoffice.com"
+      total_sitemaps:
+        description: "Total sitemaps to process (0 = auto/10)"
+        default: "0"
+      sitemaps_per_job:
+        description: "Sitemaps per parallel job"
+        default: "2"
+      urls_per_sitemap:
+        description: "Max URLs per sitemap (0 = all)"
+        default: "100"
+      max_workers:
+        description: "Parallel requests per job"
+        default: "4"
+      request_delay:
+        description: "Delay between requests (seconds)"
+        default: "1.0"
+
+jobs:
+  # ============================================================
+  # JOB 1 — PLAN: figure out how many parallel jobs to spawn
+  # ============================================================
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      site_name: ${{ steps.get_site_name.outputs.site_name }}
+    steps:
+      - name: Extract site name from URL
+        id: get_site_name
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          SITE_NAME=$(echo "$URL" | sed -E 's|https?://||;s|www\.||;s|\.[a-zA-Z]+(/.*)?$||;s|/.*||')
+          echo "site_name=$SITE_NAME" >> $GITHUB_OUTPUT
+          echo "Site name: $SITE_NAME"
+
+      - name: Build job matrix
+        id: matrix
+        run: |
+          TOTAL=${{ github.event.inputs.total_sitemaps }}
+          PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
+          URL="${{ github.event.inputs.url }}"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "total_sitemaps=0, defaulting to 10"
+            TOTAL=10
+          fi
+
+          JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
+
+          MATRIX="["
+          for ((i=0; i<JOBS; i++)); do
+            OFFSET=$(( i * PER_JOB ))
+            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\"},"
+          done
+          MATRIX="${MATRIX%,}]"
+
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Total sitemaps : $TOTAL"
+          echo "Sitemaps/job   : $PER_JOB"
+          echo "Jobs planned   : $JOBS"
+
+  # ============================================================
+  # JOB 2 — SCRAPE: run N parallel jobs, each handling a slice
+  # ============================================================
+  scrape:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip" 
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml
+
+      - name: Run bisonoffice scraper
+        env:
+          CURR_URL:             ${{ matrix.url }}
+          SITEMAP_OFFSET:       ${{ matrix.offset }}
+          MAX_SITEMAPS:         ${{ matrix.limit }}
+          MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
+          MAX_WORKERS:          ${{ github.event.inputs.max_workers }}
+          REQUEST_DELAY:        ${{ github.event.inputs.request_delay }}
+        run: |
+          echo "========================================"
+          echo " bisonoffice Scraper — Job Configuration"
+          echo "========================================"
+          echo "CURR_URL             : $CURR_URL"
+          echo "SITEMAP_OFFSET       : $SITEMAP_OFFSET"
+          echo "MAX_SITEMAPS         : $MAX_SITEMAPS"
+          echo "MAX_URLS_PER_SITEMAP : $MAX_URLS_PER_SITEMAP"
+          echo "MAX_WORKERS          : $MAX_WORKERS"
+          echo "REQUEST_DELAY        : $REQUEST_DELAY"
+          echo "========================================"
+
+          python bisonoffice/bisonoffice.py
+
+          echo ""
+          echo "Generated files:"
+          ls -la media/output/scrapping/bisonoffice/bisonoffice_products_chunk_*.csv 2>/dev/null || echo "No CSV files generated"
+
+
+      - name: Upload chunk artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk_${{ matrix.offset }}
+          path: media/output/scrapping/bisonoffice/bisonoffice_products_chunk_*.csv
+          if-no-files-found: warn
+
+      - name: Upload failure log (if any)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: failures_${{ matrix.offset }}
+          path: media/output/scrapping/failure_csv/bisonoffice_failures.csv
+          if-no-files-found: ignore
+
+  # ============================================================
+  # JOB 3 — MERGE: combine all chunk CSVs into one final file
+  # ============================================================
+  merge:
+    needs: [plan, scrape]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Download all chunk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: chunks
+          pattern: chunk_*
+          merge-multiple: true
+
+      - name: Merge CSV chunks
+        id: merge_csv
+        run: |
+          echo "Merging CSV chunks..."
+
+          CSV_FILES=$(find chunks -name "bisonoffice_products_chunk_*.csv" 2>/dev/null)
+
+          if [ -z "$CSV_FILES" ]; then
+            echo "ERROR: No CSV files found!"
+            ls -la chunks/ 2>/dev/null || echo "chunks/ directory not found"
+            exit 1
+          fi
+
+          echo "Found files:"
+          echo "$CSV_FILES"
+
+          FIRST_FILE=$(echo "$CSV_FILES" | head -n 1)
+          head -n 1 "$FIRST_FILE" > bisonoffice_products_full.csv
+
+          TOTAL_ROWS=0
+          FILE_COUNT=0
+          for f in $CSV_FILES; do
+            if [ -f "$f" ]; then
+              FILE_COUNT=$((FILE_COUNT + 1))
+              ROWS=$(tail -n +2 "$f" | wc -l)
+              TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
+              echo "  $f — $ROWS rows"
+              tail -n +2 "$f" | sed '/^$/d' >> bisonoffice_products_full.csv
+            fi
+          done
+
+          FINAL_ROWS=$(tail -n +2 bisonoffice_products_full.csv | wc -l)
+          echo "Merged: $FINAL_ROWS rows from $FILE_COUNT chunk files"
+
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "final_rows=$FINAL_ROWS" >> $GITHUB_OUTPUT
+
+      - name: Merge failure logs
+        if: always()
+        run: |
+          FAIL_FILES=$(find chunks -name "bisonoffice_failures.csv" 2>/dev/null)
+          if [ -z "$FAIL_FILES" ]; then
+            echo "No failure logs found."
+            exit 0
+          fi
+
+          FIRST=$(echo "$FAIL_FILES" | head -n 1)
+          head -n 1 "$FIRST" > bisonoffice_failures_full.csv
+          for f in $FAIL_FILES; do
+            tail -n +2 "$f" | sed '/^$/d' >> bisonoffice_failures_full.csv
+          done
+
+          FAIL_COUNT=$(tail -n +2 bisonoffice_failures_full.csv | wc -l)
+          echo "Total failed URLs: $FAIL_COUNT"
+
+      - name: Build output filename
+        id: meta
+        run: |
+          SITE_NAME="${{ needs.plan.outputs.site_name }}"
+          [ -z "$SITE_NAME" ] && SITE_NAME="bisonoffice"
+          DATE=$(date +%F_%H%M%S)
+          FILENAME="${SITE_NAME}_${DATE}.csv"
+          echo "name=$FILENAME" >> $GITHUB_OUTPUT
+          echo "Output filename: $FILENAME"
+
+      - name: Upload to FTP (optional)
+        run: |
+          if [ -z "$FTP_HOST" ] || [ -z "$FTP_USER" ] || [ -z "$FTP_PASS" ]; then
+            echo "FTP credentials not set — skipping upload."
+            exit 0
+          fi
+
+          sudo apt-get update -qq && sudo apt-get install -y lftp
+
+          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
+          set ftp:ssl-allow no
+          set cmd:fail-exit yes
+          cd $FTP_BASE_DIR
+          put bisonoffice_products_full.csv -o $FILE
+          bye
+          EOF
+
+          echo "FTP upload complete: $FILE"
+        env:
+          FTP_HOST:     ${{ secrets.FTP_HOST }}
+          FTP_USER:     ${{ secrets.FTP_USER }}
+          FTP_PASS:     ${{ secrets.FTP_PASS }}
+          FTP_BASE_DIR: ${{ secrets.FTP_PATH }}
+          FILE:         ${{ steps.meta.outputs.name }}
+
+      - name: Print summary
+        run: |
+          echo "========================================="
+          echo "           SCRAPING SUMMARY"
+          echo "========================================="
+          echo "Site Name    : ${{ needs.plan.outputs.site_name }}"
+          echo "Site URL     : ${{ github.event.inputs.url }}"
+          echo "Output File  : ${{ steps.meta.outputs.name }}"
+          echo "Chunk Files  : ${{ steps.merge_csv.outputs.file_count }}"
+          echo "Total Rows   : ${{ steps.merge_csv.outputs.final_rows }}"
+          echo "-----------------------------------------"
+          echo "Config:"
+          echo "  Max Workers    : ${{ github.event.inputs.max_workers }}"
+          echo "  Request Delay  : ${{ github.event.inputs.request_delay }}s"
+          echo "  URLs/Sitemap   : ${{ github.event.inputs.urls_per_sitemap }}"
+          echo "  Sitemaps/Job   : ${{ github.event.inputs.sitemaps_per_job }}"
+          echo "  Total Sitemaps : ${{ github.event.inputs.total_sitemaps }}"
+          echo "========================================="
+          echo ""
+          echo "Sample output (first 3 data rows):"
+          head -n 4 bisonoffice_products_full.csv 2>/dev/null || echo "No data available"
+
+      - name: Archive final results
+        uses: actions/upload-artifact@v4
+        with:
+          name: final_results
+          path: |
+            bisonoffice_products_full.csv
+            bisonoffice_failures_full.csv
+          retention-days: 7

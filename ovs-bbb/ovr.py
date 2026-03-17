@@ -7,16 +7,16 @@ import threading
 import requests
 import re
 import json
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ================= ENV =================
 
-CURR_URL = os.getenv("CURR_URL", "https://www.overstock.com").rstrip("/")
-SITEMAP_INDEX = os.getenv("SITEMAP_INDEX", "https://api.overstock.com/sitemaps/overstock-v3/us/sitemap.xml")
-API_BASE_URL = os.getenv("API_BASE_URL", "https://www.overstock.com/api/product")
+CURR_URL = os.getenv("CURR_URL", "").rstrip("/")
+API_BASE_URL = os.getenv("API_BASE_URL", "").rstrip("/")
+BBB_API_BASE_URL = os.getenv("BBB_API_BASE_URL", "").rstrip("/")
 SITEMAP_OFFSET = int(os.getenv("SITEMAP_OFFSET", "0"))
 MAX_SITEMAPS = int(os.getenv("MAX_SITEMAPS", "0"))
 MAX_URLS_PER_SITEMAP = int(os.getenv("MAX_URLS_PER_SITEMAP", "0"))
@@ -196,107 +196,403 @@ def normalize_image_url(url: str) -> str:
 
 from typing import Dict
 
-def extract_overstock_data(product_data: dict) -> Dict:
+
+def fetch_json_bbb(api_url: str) -> Optional[dict]:
+    response = requests.get(api_url, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+def extract_bbb_data(variant_data: dict) -> Dict[str, Any]:
     """
-    Extract data from Overstock product API response
-    (schema-aligned to current Overstock JSON)
+    Extract data from BBB API response based on actual data structure
     """
     try:
+        if not variant_data:
+            return {}
+        
+        # Basic extraction
+        result = {
+            'BBB_SKU': variant_data.get('modelNumber'),
+            'BBB_ModelNumber': variant_data.get('modelNumber'),
+            'BBB_OptionId': variant_data.get('optionId'),
+            'BBB_Description': variant_data.get('description'),
+            'BBB_Dimensions': None,
+            'BBB_Attributes': None,
+            'BBB_Attributes_Count': 0,
+            'BBB_AttributeIcons_Count': 0,
+            'BBB_AttributeIcons_URLs': None,
+            'BBB_AttributeIcons_Names': None
+        }
+        
+        # Extract dimensions with units
+        dims = variant_data.get('assembledDimensions', {})
+        if dims:
+            length = dims.get('length', '')
+            width = dims.get('width', '')
+            height = dims.get('height', '')
+            length_units = dims.get('lengthUnits', '')
+            width_units = dims.get('widthUnits', '')
+            height_units = dims.get('heightUnits', '')
+            
+            # Format: LxWxH with units
+            if length and width:
+                if height and height != 0:
+                    result['BBB_Dimensions'] = f"{length}{length_units} x {width}{width_units} x {height}{height_units}"
+                else:
+                    result['BBB_Dimensions'] = f"{length}{length_units} x {width}{width_units}"
+        
+        # Extract attributes as string
+        attributes = variant_data.get('attributes', [])
+        if attributes:
+            attr_list = []
+            for attr in attributes:
+                name = attr.get('name', '').strip()
+                value = attr.get('value', '').strip()
+                if name and value:
+                    attr_list.append(f"{name}: {value}")
+            
+            if attr_list:
+                result['BBB_Attributes'] = " | ".join(attr_list)
+            result['BBB_Attributes_Count'] = len(attributes)
+        
+        # Extract attribute icons
+        icons = variant_data.get('attributeIcons', [])
+        result['BBB_AttributeIcons_Count'] = len(icons)
+        
+        # Extract icon URLs and names
+        if icons:
+            icon_urls = []
+            icon_names = []
+            for icon in icons:
+                url = icon.get('url', '')
+                attribute_name = icon.get('attributeName', '')
+                attribute_value = icon.get('attributeValue', '')
+                
+                if url:
+                    icon_urls.append(url)
+                
+                if attribute_name:
+                    icon_names.append(f"{attribute_name}: {attribute_value}")
+            
+            if icon_urls:
+                result['BBB_AttributeIcons_URLs'] = " | ".join(icon_urls)
+            
+            if icon_names:
+                result['BBB_AttributeIcons_Names'] = " | ".join(icon_names)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error extracting BBB data: {e}")
+        return {}
+
+def extract_overstock_data(product_data: dict, product_url: str) -> List[Dict]:
+    try:
+        if not product_data or not isinstance(product_data, dict):
+            log(f"Invalid product_data: {type(product_data)}", "ERROR")
+            return []
+
         product = product_data  # API already returns product root
+        
+        # Safe getter function with fallback
+        def safe_get(data, keys, default=''):
+            if not data:
+                return default
+            
+            for key in keys if isinstance(keys, list) else [keys]:
+                if isinstance(data, dict):
+                    data = data.get(key)
+                elif isinstance(data, list) and isinstance(key, int) and 0 <= key < len(data):
+                    data = data[key]
+                else:
+                    return default
+                
+                if data is None:
+                    return default
+            
+            return data or default
+        
+        # ---------- Common data ----------
+        product_id = str(safe_get(product, 'productId', ''))
+        name = str(safe_get(product, 'name', '')).strip()
 
-        # ---------- Basic ----------
-        product_id = str(product.get('productId', ''))
-        name = product.get('name', '').strip()
-
-        brand_obj = product.get('brand', {})
-        brand = brand_obj.get('name', '') if isinstance(brand_obj, dict) else str(brand_obj)
+        brand_obj = safe_get(product, 'brand', {})
+        brand = safe_get(brand_obj, 'name', '') if isinstance(brand_obj, dict) else str(brand_obj)
 
         # ---------- SKU / MPN ----------
-        details = product.get('details', {})
-        sku = details.get('sku', '')
+        details = safe_get(product, 'details', {})
+        sku = safe_get(details, 'sku', '')
 
-        specs = product.get('specifications', {})
-        mpn = specs.get('Model Number', [''])[0]
+        specs = safe_get(product, 'specifications', {})
+        group_attr_1 = safe_get(specs, ['Color', 0], '')
+        mpn = safe_get(specs, ['Model Number', 0], '') 
 
         # ---------- Category ----------
-        breadcrumbs = product.get('breadcrumbs', [])
+        breadcrumbs = safe_get(product, 'breadcrumbs', [])
         category = ''
         category_url = ''
 
-        if breadcrumbs:
+        bbb_url = ''
+        bbb_sku = ''
+        bbb_modelnumber = ''
+        bbb_optionid = ''
+        bbb_description = ''
+        bbb_dimensions = ''
+        bbb_attributes = ''
+
+        if breadcrumbs and isinstance(breadcrumbs, list) and len(breadcrumbs) > 0:
             last = breadcrumbs[-1]
-            category = last.get('label', '')
-            url = last.get('url', '')
-            category_url = f"{CURR_URL}{url}" if url.startswith('/') else url
+            if isinstance(last, dict):
+                category = safe_get(last, 'label', '')
+                url = safe_get(last, 'url', '')
+                last_url = url.lstrip('/') if url else ''
+                category_url = f"{CURR_URL}/{last_url}" if last_url else ''
 
         # ---------- Images ----------
-        image_data = product.get('imageData', {})
-        main_image = image_data.get('productImageUrl', '')
+        images = safe_get(product, 'images', [])
+        image_data = safe_get(product, 'imageData', {})
+        
+        main_image = ''
+        if images and isinstance(images, list) and len(images) > 0:
+            first_image = images[0]
+            if isinstance(first_image, dict):
+                main_image = safe_get(first_image, 'url', '')
+        if not main_image:
+            main_image = safe_get(image_data, 'productImageUrl', '')
+        
+        all_products = []
+        
+        # ---------- Check for multiple variations ----------
+        multiple_variations = safe_get(product, 'multipleInStockVariations', False)
+        variations = safe_get(product, 'variations', [])
+        
+        if multiple_variations and isinstance(variations, list) and len(variations) > 1:
+            # Process each variation
+            for variation in variations:
+                if not isinstance(variation, dict):
+                    continue
+                    
+                variation_id = safe_get(variation, 'variationId', '')
+                full_sku = safe_get(variation, 'fullSku', '')
+                
+                # Create variation-specific URL
+                if variation_id:
+                    variation_url = f"{product_url}?option={variation_id}"
+                    try:
+                        bbb_api_url = f"{BBB_API_BASE_URL}/{variation_id}"
+                        bbb_data = fetch_json_bbb(bbb_api_url)
+                        variant_info = extract_bbb_data(bbb_data)
+                        bbb_sku = variant_info.get('BBB_SKU', '')
+                        bbb_modelnumber = variant_info.get('BBB_ModelNumber', '')
+                        bbb_optionid = variant_info.get('BBB_OptionId', '')
+                        bbb_description = variant_info.get('BBB_Description', '')
+                        bbb_dimensions = variant_info.get('BBB_Dimensions', '')
+                        bbb_attributes = variant_info.get('BBB_Attributes', '')
+                    except Exception as e:
+                        log(f"fetch bbb data failed : {bbb_api_url}", "ERROR")
 
-        # ---------- Variations (pick first SELLABLE) ----------
-        variations = product.get('variations', [])
+                else:
+                    variation_url = product_url
+                
+                # ---------- Price ----------
+                prices = safe_get(variation, 'prices', {})
+                price = ''
+                
+                # Try salePrice first, then basePrice, then product selectedPrice
+                if isinstance(prices, dict):
+                    sale_price = safe_get(prices, ['salePrice', 'amount'], '')
+                    if sale_price:
+                        price = sale_price
+                    else:
+                        base_price = safe_get(prices, ['basePrice', 'amount'], '')
+                        if base_price:
+                            price = base_price
+                
+                if not price:
+                    selected_price = safe_get(product, ['selectedPrice', 'amount'], '')
+                    if selected_price:
+                        price = selected_price
+                
+                variant_name = safe_get(variation, 'name', '')
+                if variant_name:
+                    name = variant_name
 
-        variation_id = ''
-        quantity = 0
-        status = 'OUT_OF_STOCK'
-        price = ''
-        group_attr_1 = ''
-        group_attr_2 = ''
+                variant_image = safe_get(variation, 'imageUrl', '')
+                if variant_image:
+                    main_image = variant_image
+                    
+                # ---------- Quantity & Status ----------
+                quantity = safe_get(variation, 'quantityAvailable', '')
+                
+                # Check both possible status fields
+                status_value = safe_get(variation, 'status', '')
+                sellable_status = safe_get(variation, 'sellableStatus', '')
+                if status_value == 'SELLABLE' or sellable_status == 'SELLABLE':
+                    status = 'In Stock'
+                else:
+                    status = 'Out of Stock'
+                
+                # ---------- Group Attributes ----------
+                variation_desc = safe_get(variation, 'description', '')
+                if variation_desc:
+                    group_attr_1 = variation_desc
+                elif isinstance(specs.get('Color'), list) and len(specs['Color']) > 0:
+                    group_attr_1 = specs['Color'][0]
+                else:
+                    group_attr_1 = ''
+                    
+                group_attr_2 = ''
+                if isinstance(specs.get('Material'), list) and len(specs['Material']) > 0:
+                    group_attr_2 = specs['Material'][0]
+                elif isinstance(specs.get('Top Material'), list) and len(specs['Top Material']) > 0:
+                    group_attr_2 = specs['Top Material'][0]
 
-        selected_variation = None
-        for v in variations:
-            if v.get('status') == 'SELLABLE':
-                selected_variation = v
-                break
+                bbb_url = variation_url.replace("www.overstock.com","www.bedbathandbeyond.com")
+                product_info = {
+                    'product_id': product_id,
+                    'name': name,
+                    'brand': brand,
+                    'price': price,
+                    'main_image': main_image,
+                    'sku': full_sku if full_sku else sku,
+                    'mpn': mpn,
+                    'category': category,
+                    'category_url': category_url,
+                    'quantity': quantity,
+                    'status': status,
+                    'variation_id': variation_id,
+                    'group_attr_1': group_attr_1,
+                    'group_attr_2': group_attr_2,
+                    'product_url': variation_url,
+                    'bbb_url' : bbb_url,
+                    'bbb_sku' : bbb_sku,
+                    'bbb_modelnumber' : bbb_modelnumber,
+                    'bbb_optionid' : bbb_optionid,
+                    'bbb_description' : bbb_description,
+                    'bbb_dimensions' : bbb_dimensions,
+                    'bbb_attributes' : bbb_attributes
+                }
+                
+                all_products.append(product_info)
+            
+            return all_products if all_products else []
+            
+        else:
+            # Single product or no variations
+            variation_id = ''
+            quantity = ''
+            price = ''
+            status = 'Out of Stock'
+            group_attr_1_current = group_attr_1
+            
+            # Get data from first variation if exists
+            if isinstance(variations, list) and len(variations) > 0:
+                first_variation = variations[0]
+                if isinstance(first_variation, dict):
+                    variation_id = safe_get(first_variation, 'variationId', '')
+                    quantity = safe_get(first_variation, 'quantityAvailable', '')
+                    variation_desc = safe_get(first_variation, 'description', '')
+                    if variation_desc:
+                        group_attr_1_current = variation_desc
+                    
+                    # Get price from variation if available
+                    prices = safe_get(first_variation, 'prices', {})
+                    price = ''
+                    if isinstance(prices, dict):
+                        sale_price = safe_get(prices, ['salePrice', 'amount'], '')
+                        if sale_price:
+                            price = sale_price
+                        else:
+                            base_price = safe_get(prices, ['basePrice', 'amount'], '')
+                            if base_price:
+                                price = base_price
+                    
+                    # Check status
+                    status_value = safe_get(first_variation, 'status', '')
+                    sellable_status = safe_get(first_variation, 'sellableStatus', '')
+                    if status_value == 'SELLABLE' or sellable_status == 'SELLABLE':
+                        status = 'In Stock'
+                    else:
+                        status = 'Out of Stock'
 
-        if not selected_variation and variations:
-            selected_variation = variations[0]
-
-        if selected_variation:
-            variation_id = selected_variation.get('variationId')
-
-            inventory = selected_variation.get('inventory', {})
-            quantity = inventory.get('quantityAvailable', 0)
-
-            status = selected_variation.get('status', '')
-
-            prices = selected_variation.get('prices', {})
-            sale = prices.get('salePrice', {})
-            base = prices.get('basePrice', {})
-
-            price = (
-                sale.get('amount')
-                or base.get('amount')
-                or ''
-            )
-
-            # Variation name usually carries size
-            group_attr_1 = selected_variation.get('description', '')
-            group_attr_2 = selected_variation.get('fullSku', '')
-
-        return {
-            'product_id': product_id,
-            'name': name,
-            'brand': brand,
-            'price': price,
-            'main_image': main_image,
-            'sku': sku,
-            'mpn': mpn,
-            'category': category,
-            'category_url': category_url,
-            'quantity': quantity,
-            'status': status,
-            'variation_id': variation_id,
-            'group_attr_1': group_attr_1,
-            'group_attr_2': group_attr_2
-        }
+                    if variation_id:
+                        product_url = f"{product_url}?option={variation_id}"
+                        try:
+                            bbb_api_url = f"{BBB_API_BASE_URL}/{variation_id}"
+                            bbb_data = fetch_json_bbb(bbb_api_url)
+                            variant_info = extract_bbb_data(bbb_data)
+                            bbb_sku = variant_info.get('BBB_SKU', '')
+                            bbb_modelnumber = variant_info.get('BBB_ModelNumber', '')
+                            bbb_optionid = variant_info.get('BBB_OptionId', '')
+                            bbb_description = variant_info.get('BBB_Description', '')
+                            bbb_dimensions = variant_info.get('BBB_Dimensions', '')
+                            bbb_attributes = variant_info.get('BBB_Attributes', '')
+                        except Exception as e:
+                            log(f"fetch bbb data failed : {bbb_api_url}", "ERROR")
+            
+            # If price not found in variation, try product level
+            if not price:
+                selected_price = safe_get(product, ['selectedPrice', 'amount'], '')
+                if selected_price:
+                    price = selected_price
+                else:
+                    # Try lowestVariationPrice as fallback
+                    lowest_price = safe_get(product, ['lowestVariationPrice', 'amount'], '')
+                    if lowest_price:
+                        price = lowest_price
+            
+            # If no variations, check product-level stock
+            if not variation_id:
+                in_stock = safe_get(product, 'inStock', False)
+                is_sellable = safe_get(product, 'isSellable', False)
+                sellable_status = safe_get(product, 'sellableStatus', '')
+                
+                if in_stock or is_sellable or sellable_status == 'SELLABLE':
+                    status = 'In Stock'
+                else:
+                    status = 'Out of Stock'
+            
+            # ---------- Group Attributes ----------
+            group_attr_2 = ''
+            if isinstance(specs.get('Material'), list) and len(specs['Material']) > 0:
+                group_attr_2 = specs['Material'][0]
+            elif isinstance(specs.get('Top Material'), list) and len(specs['Top Material']) > 0:
+                group_attr_2 = specs['Top Material'][0]
+            bbb_url = product_url.replace("www.overstock.com","www.bedbathandbeyond.com")
+            product_info = {
+                'product_id': product_id,
+                'name': name,
+                'brand': brand,
+                'price': price,
+                'main_image': main_image,
+                'sku': sku,
+                'mpn': mpn,
+                'category': category,
+                'category_url': category_url,
+                'quantity': quantity,
+                'status': status,
+                'variation_id': variation_id,
+                'group_attr_1': group_attr_1_current,
+                'group_attr_2': group_attr_2,
+                'product_url': product_url,
+                'bbb_url' : bbb_url,
+                'bbb_sku' : bbb_sku,
+                'bbb_modelnumber' : bbb_modelnumber,
+                'bbb_optionid' : bbb_optionid,
+                'bbb_description' : bbb_description,
+                'bbb_dimensions' : bbb_dimensions,
+                'bbb_attributes' : bbb_attributes
+            }
+            
+            return [product_info]
 
     except Exception as e:
-        log(f"Error extracting Overstock data: {e}", "ERROR")
-        return {}
+        log(f"Error extracting Overstock data: {str(e)} - Product data: {product_data.get('productId', 'Unknown') if isinstance(product_data, dict) else 'Invalid'}", "ERROR")
+        return []
+
 
 def process_product_data(product_url: str, writer, seen: set, stats: dict):
-    """Process a single Overstock product URL"""
+    """Process a single Overstock product URL - handles multiple variations"""
     if product_url in seen:
         return
     seen.add(product_url)
@@ -310,12 +606,8 @@ def process_product_data(product_url: str, writer, seen: set, stats: dict):
         log(f"No product ID found for URL: {product_url}", "ERROR")
         return
     
-    # Fetch product data from API - Overstock may have different endpoints
-    # Try multiple possible API endpoints
     api_endpoints = [
-        f"https://www.overstock.com/api/product/{product_id}",
-        # f"https://www.overstock.com/api/products/{product_id}",
-        # f"https://www.overstock.com/api/catalog/product/{product_id}",
+        f"{API_BASE_URL}/{product_id}",
     ]
     
     data = None
@@ -345,58 +637,105 @@ def process_product_data(product_url: str, writer, seen: set, stats: dict):
         log(f"No data found for product {product_id}", "ERROR")
         return
     
-    # Extract data from response
-    product_info = extract_overstock_data(data)
-    if not product_info.get('product_id'):
+    # Extract data from response - now returns a list of variations
+    products_list = extract_overstock_data(data, product_url)
+    
+    if not products_list:
         stats['errors'] += 1
-        log(f"Invalid data for product {product_id}", "ERROR")
+        log(f"No variations found for product {product_id}", "ERROR")
         return
     
-    try:
-        # Prepare row data
-        row = [
-            product_url + "?option=" + str(product_info['variation_id']),
-            product_info['product_id'],  # Ref Product ID
-            product_info['variation_id'],  # Ref Varient ID
-            product_info['category'],  # Ref Category
-            product_info['category_url'],  # Ref Category URL
-            product_info['brand'],  # Ref Brand Name
-            product_info['name'],  # Ref Product Name
-            product_info['sku'],  # Ref SKU
-            product_info['mpn'],  # Ref MPN
-            '',  # Ref GTIN (empty for now)
-            product_info['price'],  # Ref Price
-            normalize_image_url(product_info['main_image']),  # Ref Main Image
-            product_info['quantity'],  # Ref Quantity
-            product_info['group_attr_1'],  # Ref Group Attr 1
-            product_info['group_attr_2'],  # Ref Group Attr 2
-            product_info['status'],  # Ref Status
-            SCRAPED_DATE  # Date Scrapped
-        ]
+    
+    
+    for product_info in products_list:
+        if not product_info.get('product_id'):
+            continue
+            
+        try:
+            # Prepare row data for each variation
+            row = [
+                product_info['product_url'],  # Variation-specific URL
+                product_info['product_id'],  # Ref Product ID
+                product_info['variation_id'],  # Ref Varient ID
+                product_info['category'],  # Ref Category
+                product_info['category_url'],  # Ref Category URL
+                product_info['brand'],  # Ref Brand Name
+                product_info['name'],  # Ref Product Name
+                product_info['sku'],  # Ref SKU
+                product_info['mpn'],  # Ref MPN
+                '',  # Ref GTIN (empty for now)
+                product_info['price'],  # Ref Price
+                normalize_image_url(product_info['main_image']),  # Ref Main Image
+                product_info['quantity'],  # Ref Quantity
+                product_info['group_attr_1'],  # Ref Group Attr 1
+                product_info['group_attr_2'],  # Ref Group Attr 2
+                product_info['status'],  # Ref Status
+                product_info['bbb_url'],
+                product_info['bbb_sku'],
+                product_info['bbb_modelnumber'],
+                product_info['bbb_optionid'],
+                product_info['bbb_description'],
+                product_info['bbb_dimensions'],
+                product_info['bbb_attributes'],
+                SCRAPED_DATE  # Date Scrapped
+            ]
+            
+            with csv_lock:
+                writer.writerow(row)
+            
+            
+            stats['products_fetched'] += 1
+            
+            log(f"Fetched product {product_info['product_id']}: {product_info['name'][:50]}...", "INFO")
+            
+        except Exception as e:
+            log(f"Error creating row for product {product_id}: {e}", "ERROR")
+            stats['errors'] += 1
         
-        with csv_lock:
-            writer.writerow(row)
-        
-        stats['products_fetched'] += 1
-        log(f"Fetched product {product_info['product_id']}: {product_info['name'][:50]}...", "INFO")
-        
-    except Exception as e:
-        log(f"Error creating row for product {product_id}: {e}", "ERROR")
-        stats['errors'] += 1
     
     # Respect request delay
     time.sleep(REQUEST_DELAY)
     stats['urls_processed'] += 1
 
 # ================= MAIN =================
+def get_sitemap_from_robots_txt():
+    try:
+        # Construct robots.txt URL
+        robots_url = f"{CURR_URL}/robots.txt"
+
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        response = requests.get(robots_url, headers=headers, timeout=10, verify=True)
+        
+        # Fetch the robots.txt content
+        # response = session.get(robots_url, timeout=15, verify=True)
+        # response.raise_for_status()
+     
+        # Extract Sitemap URL
+        sitemap_url = None
+        for line in response.text.split('\n'):
+            if line.lower().startswith('sitemap:'):
+                sitemap_url = line.split(':', 1)[1].strip()
+                break
+        
+        if sitemap_url:
+            print(f"Extracted Sitemap URL: {sitemap_url}")
+            return sitemap_url
+        else:
+            print("No Sitemap directive found in robots.txt")
+            return None
+            
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching robots.txt: {e}")
+        return None
 
 def main():
+    sitemap = get_sitemap_from_robots_txt()
     log("=" * 60)
     log("Overstock Parallel Scraper")
     log(f"Timestamp: {SCRAPED_DATE}")
     log(f"Base URL: {CURR_URL}")
     log(f"API Base URL: {API_BASE_URL}")
-    log(f"Sitemap Index: {SITEMAP_INDEX}")
+    log(f"Sitemap Index: {sitemap}")
     log(f"Sitemap Offset: {SITEMAP_OFFSET}")
     log(f"Max Sitemaps: {MAX_SITEMAPS if MAX_SITEMAPS > 0 else 'All'}")
     log(f"Max URLs per Sitemap: {MAX_URLS_PER_SITEMAP if MAX_URLS_PER_SITEMAP > 0 else 'All'}")
@@ -405,8 +744,8 @@ def main():
     log("=" * 60)
     
     # Load sitemap index - NO HEADERS for sitemap
-    log(f"Loading sitemap index from {SITEMAP_INDEX}")
-    index = load_xml(SITEMAP_INDEX)
+    log(f"Loading sitemap index from {sitemap}")
+    index = load_xml(sitemap)
     if index is None:
         log("Failed to load sitemap index", "ERROR")
         sys.exit(1)
@@ -465,6 +804,13 @@ def main():
             "Ref Group Attr 1",
             "Ref Group Attr 2",
             "Ref Status",
+            'BBB URL',
+            'BBB SKU',
+            'BBB ModelNumber',
+            'BBB OptionId',
+            'BBB Description',
+            'BBB Dimensions',
+            'BBB Attributes',
             "Date Scrapped"
         ])
         

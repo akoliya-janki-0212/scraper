@@ -1,0 +1,410 @@
+{
+    "afa-stores": {
+        "name": "AFA Stores",
+        "domain": "afastores.com",
+        "url": "https://www.afastores.com",
+        "scraper": "shopify-scrapper/shopifyscrap-cloudflare.py",
+        "status": "done",
+        "notes": "full site scrap with custom python script"
+    },
+    "english-elm": {
+        "name": "English Elm",
+        "domain": "englishelm.com",
+        "url": "https://englishelm.com",
+        "scraper": "shopify-scrapper/shopifyscrap-normal.py",
+        "status": "done",
+        "notes": "Full site scrap with github actions within 20 mins"
+    },
+    "walmart": {
+        "name": "Walmart",
+        "domain": "walmart.com",
+        "url": "https://www.walmart.com",
+        "scraper": "",
+        "status": "blocking",
+        "notes": "press 'n hold captcha"
+    },
+    "cymax": {
+        "name": "Cymax",
+        "domain": "cymax.com",
+        "url": "https://www.cymax.com",
+        "scraper": "cymax/cymax.py",
+        "status": "pending",
+        "notes": "Full site scrap"
+    },
+    "homesquare": {
+        "name": "HomeSquare",
+        "domain": "homesquare.com",
+        "url": "https://www.homesquare.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": "Full site scrap"
+    },
+    "coleman-furniture": {
+        "name": "Coleman Furniture",
+        "domain": "colemanfurniture.com",
+        "url": "https://www.colemanfurniture.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": "Full site scrap with github actions in 5 hrs"
+    },
+    "home-gallery-stores": {
+        "name": "Home Gallery Stores",
+        "domain": "homegallerystores.com",
+        "url": "https://www.homegallerystores.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "bisonoffice": {
+        "name": "BisonOffice.com",
+        "domain": "bisonoffice.com",
+        "url": "https://www.bisonoffice.com",
+        "scraper": "bisonoffice/bisonoffice.py",
+        "status": "done",
+        "notes": "add ?bo=0 to url"
+    },
+    "amazon-seller": {
+        "name": "Amazon.com - Seller",
+        "domain": "amazon.com",
+        "url": "https://www.amazon.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": "Not required for now, will think at last"
+    },
+    "emma-mason": {
+        "name": "Emma Mason",
+        "domain": "emmamason.com",
+        "url": "https://www.emmamason.com",
+        "scraper": "drl/em_scraper.py",
+        "status": "partial",
+        "notes": "html scarp with js variable dataLayer"
+    },
+    "overstock": {
+        "name": "Overstock.com",
+        "domain": "overstock.com",
+        "url": "https://www.overstock.com",
+        "scraper": "ovs-bbb/ovr.py",
+        "status": "done",
+        "notes": "Collected API details, required to try"
+    },
+    "furniture-cart": {
+        "name": "Furniture Cart",
+        "domain": "furniturecart.com",
+        "url": "https://www.furniturecart.com",
+        "scraper": "fpfc/fp_fc_scraper.py",
+        "status": "done",
+        "notes": "CLIENT HAD STOPPED THIS COMPETITOR"
+    },
+    "furniture-pick": {
+        "name": "Furniture Pick",
+        "domain": "furniturepick.com",
+        "url": "https://www.furniturepick.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": "CLIENT HAD STOPPED THIS COMPETITOR"
+    },
+    "grayson-living": {
+        "name": "Grayson Living",
+        "domain": "graysonliving.com",
+        "url": "https://www.graysonliving.com",
+        "scraper": "shopify-scrapper/shopifyscrap-normal.py",
+        "status": "done",
+        "notes": "Full site scrap with github actions within 20 mins"
+    },
+    "unlimited-furniture-group": {
+        "name": "Unlimited Furniture Group",
+        "domain": "unlimitedfurnituregroup.com",
+        "url": "https://www.unlimitedfurnituregroup.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "bed-bath-beyond": {
+        "name": "Bed Bath & Beyond",
+        "domain": "bedbathandbeyond.com",
+        "url": "https://www.bedbathandbeyond.com",
+        "scraper": "ovs-bbb/ovr.py",
+        "status": "done",
+        "notes": "full site scrap, API URL found"
+    },
+    "france-and-son": {
+        "name": "France & Son",
+        "domain": "franceandson.com",
+        "url": "https://www.franceandson.com",
+        "scraper": "shopify-scrapper/shopifyscrap-normal.py",
+        "status": "done",
+        "notes": "Full site scrap with github actions within 20 mins"
+    },
+    "ashley": {
+        "name": "Ashley",
+        "domain": "ashleyfurniture.com",
+        "url": "https://www.ashleyfurniture.com",
+        "scraper": "",
+        "status": "blocking",
+        "notes": "Not working"
+    },
+    "dining-rooms-outlet": {
+        "name": "Dining Rooms Outlet",
+        "domain": "diningroomsoutlet.com",
+        "url": "https://www.diningroomsoutlet.com",
+        "scraper": "drl/dlr_scraper.py",
+        "status": "done",
+        "notes": "html scarp with js variable dataLayer"
+    },
+    "bedroom-furniture-discounts": {
+        "name": "Bedroom Furniture Discounts",
+        "domain": "bedroomfurniturediscounts.com",
+        "url": "https://www.bedroomfurniturediscounts.com",
+        "scraper": "drl/dlr_scraper.py",
+        "status": "done",
+        "notes": "html scarp with js variable dataLayer"
+    },
+    "discount-living-rooms": {
+        "name": "Discount Living Rooms",
+        "domain": "discountlivingrooms.com",
+        "url": "https://www.discountlivingrooms.com",
+        "scraper": "drl/dlr_scraper.py",
+        "status": "done",
+        "notes": "html scarp with js variable dataLayer"
+    },
+    "tv-stands-outlet": {
+        "name": "TV Stands Outlet",
+        "domain": "tvstandsoutlet.com",
+        "url": "https://www.tvstandsoutlet.com",
+        "scraper": "drl/dlr_scraper.py",
+        "status": "done",
+        "notes": "html scarp with js variable dataLayer"
+    },
+    "wayfair": {
+        "name": "Wayfair",
+        "domain": "wayfair.com",
+        "url": "https://www.wayfair.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "houzz": {
+        "name": "Houzz",
+        "domain": "houzz.com",
+        "url": "https://www.houzz.com",
+        "scraper": "shopify-scrapper/shopifyscrap-normal.py",
+        "status": "ready",
+        "notes": "Shopify - Normal"
+    },
+    "luxedecor": {
+        "name": "LuxeDecor",
+        "domain": "luxedecor.com",
+        "url": "https://www.luxedecor.com",
+        "scraper": "luxedecor/luxedecor.py",
+        "status": "blocking",
+        "notes": "getting rate limited error while fetch sitemap"
+    },
+    "target": {
+        "name": "Target",
+        "domain": "target.com",
+        "url": "https://www.target.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "home-depot": {
+        "name": "Home Depot",
+        "domain": "homedepot.com",
+        "url": "https://www.homedepot.com",
+        "scraper": "graphql/gql.py",
+        "status": "started",
+        "notes": "graphQL"
+    },
+    "sears": {
+        "name": "Sears",
+        "domain": "sears.com",
+        "url": "https://www.sears.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "perigold": {
+        "name": "Perigold",
+        "domain": "perigold.com",
+        "url": "https://www.perigold.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "lowes": {
+        "name": "Lowe's",
+        "domain": "lowes.com",
+        "url": "https://www.lowes.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "macys": {
+        "name": "Macy's",
+        "domain": "macys.com",
+        "url": "https://www.macys.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "raymour-flanigan": {
+        "name": "Raymour & Flanigan",
+        "domain": "raymourflanigan.com",
+        "url": "https://www.raymourflanigan.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "bush-furniture": {
+        "name": "Bush Furniture",
+        "domain": "bushfurniture.com",
+        "url": "https://www.bushfurniture.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "jcpenney": {
+        "name": "JCPenney",
+        "domain": "jcpenney.com",
+        "url": "https://www.jcpenney.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "grayson-luxury": {
+        "name": "Grayson Luxury",
+        "domain": "graysonluxury.com",
+        "url": "https://www.graysonluxury.com",
+        "scraper": "shopify-scrapper/shopifyscrap-normal.py",
+        "status": "done",
+        "notes": "shopigy site we can scrap full"
+    },
+    "bloomingdales": {
+        "name": "Bloomingdale's",
+        "domain": "bloomingdales.com",
+        "url": "https://www.bloomingdales.com",
+        "scraper": "",
+        "status": "ready",
+        "notes": "Has products page via digital xapi"
+    },
+    "kathy-kuo-home": {
+        "name": "Kathy Kuo Home",
+        "domain": "kathykuohome.com",
+        "url": "https://www.kathykuohome.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "neiman-marcus": {
+        "name": "Neiman Marcus",
+        "domain": "neimanmarcus.com",
+        "url": "https://www.neimanmarcus.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "horchow": {
+        "name": "Horchow",
+        "domain": "horchow.com",
+        "url": "https://www.horchow.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "bushfurniture2go": {
+        "name": "bushfurniture2go.com",
+        "domain": "bushfurniture2go.com",
+        "url": "https://www.bushfurniture2go.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "quill": {
+        "name": "Quill",
+        "domain": "quill.com",
+        "url": "https://www.quill.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "staples": {
+        "name": "Staples",
+        "domain": "staples.com",
+        "url": "https://www.staples.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "oroa": {
+        "name": "oroa",
+        "domain": "oroa.com",
+        "url": "https://www.oroa.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "us-mattress": {
+        "name": "US-Mattress",
+        "domain": "us-mattress.com",
+        "url": "https://www.us-mattress.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "beautyrest": {
+        "name": "Beautyrest",
+        "domain": "beautyrest.com",
+        "url": "https://www.beautyrest.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "groupon": {
+        "name": "Groupon.com",
+        "domain": "groupon.com",
+        "url": "https://www.groupon.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "serta": {
+        "name": "Serta",
+        "domain": "serta.com",
+        "url": "https://www.serta.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "bellacor": {
+        "name": "Bellacor",
+        "domain": "bellacor.com",
+        "url": "https://www.bellacor.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "homethreads": {
+        "name": "Homethreads",
+        "domain": "homethreads.com",
+        "url": "https://www.homethreads.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "kohls": {
+        "name": "Kohl's",
+        "domain": "kohls.com",
+        "url": "https://www.kohls.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    },
+    "google-shopping": {
+        "name": "Google Shopping",
+        "domain": "google.com/shopping",
+        "url": "https://shopping.google.com",
+        "scraper": "",
+        "status": "pending",
+        "notes": ""
+    }
+}

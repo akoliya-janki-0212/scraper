@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scraper Workflow Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0a0e1a;
+            --card: rgba(17, 24, 39, 0.75);
+            --card-hover: rgba(22, 30, 48, 0.9);
+            --border: rgba(255, 255, 255, 0.07);
+            --border-act: rgba(255, 255, 255, 0.14);
+            --text: #f1f5f9;
+            --sub: #94a3b8;
+            --muted: #64748b;
+            --green: #22c55e;
+            --red: #ef4444;
+            --yellow: #f59e0b;
+            --blue: #667eea;
+            --purple: #764ba2;
+            --r: 16px;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            background-image:
+                radial-gradient(ellipse at 20% 0%, rgba(102, 126, 234, .07) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 100%, rgba(118, 75, 162, .05) 0%, transparent 50%);
+        }
+
+        /* ======= AUTH OVERLAY ======= */
+        #auth-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(10, 14, 26, .97);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .auth-box {
+            background: rgba(17, 24, 39, .9);
+            border: 1px solid var(--border-act);
+            border-radius: 20px;
+            padding: 40px;
+            width: 420px;
+            text-align: center;
+        }
+
+        .auth-logo {
+            width: 56px;
+            height: 56px;
+            background: linear-gradient(135deg, var(--blue), var(--purple));
+            border-radius: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            font-size: 28px;
+        }
+
+        .auth-box h2 {
+            font-size: 1.4rem;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .auth-box p {
+            color: var(--sub);
+            font-size: .82rem;
+            margin-bottom: 24px;
+            line-height: 1.5;
+        }
+
+        .auth-field {
+            margin-bottom: 14px;
+            text-align: left;
+        }
+
+        .auth-field label {
+            font-size: .75rem;
+            color: var(--sub);
+            display: block;
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+
+        .auth-field input {
+            width: 100%;
+            background: rgba(255, 255, 255, .05);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: .85rem;
+        }
+
+        .auth-field input:focus {
+            outline: none;
+            border-color: rgba(102, 126, 234, .5);
+        }
+
+        .auth-hint {
+            font-size: .7rem;
+            color: var(--muted);
+            margin-top: 4px;
+        }
+
+        .btn-primary {
+            width: 100%;
+            padding: 11px;
+            background: linear-gradient(135deg, var(--blue), var(--purple));
+            border: none;
+            border-radius: 10px;
+            color: white;
+            font-weight: 600;
+            font-size: .9rem;
+            cursor: pointer;
+            font-family: inherit;
+            margin-top: 8px;
+            transition: opacity .2s;
+        }
+
+        .btn-primary:hover {
+            opacity: .9;
+        }
+
+        /* ======= HEADER ======= */
+        .header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(10, 14, 26, .88);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 24px;
+        }
+
+        .header-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo-row {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-icon {
+            width: 34px;
+            height: 34px;
+            background: linear-gradient(135deg, var(--blue), var(--purple));
+            border-radius: 9px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        h1 {
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--blue), var(--purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            font-size: .73rem;
+            color: var(--muted);
+            margin-top: 1px;
+        }
+
+        .stats-pill {
+            background: rgba(255, 255, 255, .05);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 7px 16px;
+            font-size: .78rem;
+            color: var(--sub);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .repo-badge {
+            font-size: .7rem;
+            color: var(--muted);
+            background: rgba(255, 255, 255, .04);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 3px 10px;
+        }
+
+        .logout-btn {
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 5px 12px;
+            color: var(--muted);
+            font-size: .72rem;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .2s;
+        }
+
+        .logout-btn:hover {
+            border-color: var(--border-act);
+            color: var(--text);
+        }
+
+        /* ======= FILTER ======= */
+        .filter-bar {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 14px 24px 0;
+        }
+
+        .filter-inner {
+            display: flex;
+            gap: 7px;
+            flex-wrap: wrap;
+        }
+
+        .filter-btn {
+            background: rgba(255, 255, 255, .04);
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            padding: 5px 14px;
+            font-size: .75rem;
+            color: var(--sub);
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .2s;
+        }
+
+        .filter-btn:hover {
+            background: rgba(255, 255, 255, .08);
+            color: var(--text);
+        }
+
+        .filter-btn.active {
+            background: linear-gradient(135deg, rgba(102, 126, 234, .2), rgba(118, 75, 162, .2));
+            border-color: rgba(102, 126, 234, .4);
+            color: var(--text);
+        }
+
+        /* ======= GRID ======= */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 18px 24px 60px;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(370px, 1fr));
+            gap: 18px;
+        }
+
+        /* ======= CARD ======= */
+        .card {
+            background: var(--card);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            border-radius: var(--r);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            position: relative;
+            overflow: hidden;
+            transition: all .3s;
+        }
+
+        .card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--c, var(--blue));
+            opacity: .6;
+            transition: opacity .3s;
+        }
+
+        .card:hover {
+            background: var(--card-hover);
+            border-color: var(--border-act);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 28px rgba(0, 0, 0, .3);
+        }
+
+        .card:hover::before {
+            opacity: 1;
+        }
+
+        .card.running {
+            border-color: rgba(34, 197, 94, .2);
+        }
+
+        .card.running::before {
+            background: var(--green);
+            opacity: 1;
+        }
+
+        .card.in_progress {
+            border-color: rgba(245, 158, 11, .2);
+        }
+
+        .card.in_progress::before {
+            background: var(--yellow);
+            opacity: 1;
+        }
+
+        .card.failure {
+            border-color: rgba(239, 68, 68, .2);
+        }
+
+        .card.failure::before {
+            background: var(--red);
+            opacity: 1;
+        }
+
+        /* ======= CARD HEADER ======= */
+        .title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: var(--muted);
+        }
+
+        .dot.running,
+        .dot.queued {
+            background: var(--green);
+            animation: pulse 1.5s infinite;
+            box-shadow: 0 0 8px rgba(34, 197, 94, .5);
+        }
+
+        .dot.in_progress {
+            background: var(--yellow);
+            animation: pulse 1.5s infinite;
+        }
+
+        .dot.failure,
+        .dot.cancelled {
+            background: var(--red);
+        }
+
+        .dot.success {
+            background: var(--blue);
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1)
+            }
+
+            50% {
+                opacity: .5;
+                transform: scale(1.2)
+            }
+        }
+
+        .card-title {
+            font-size: 1rem;
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .badge {
+            font-size: .62rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: .5px;
+            padding: 2px 9px;
+            border-radius: 10px;
+            background: rgba(255, 255, 255, .06);
+            color: var(--sub);
+            white-space: nowrap;
+        }
+
+        .card-desc {
+            font-size: .78rem;
+            color: var(--sub);
+            line-height: 1.5;
+            margin-top: 2px;
+        }
+
+        .card-file {
+            margin-top: 2px;
+        }
+
+        .card-file code {
+            font-size: .68rem;
+            color: var(--muted);
+            background: rgba(255, 255, 255, .04);
+            padding: 2px 7px;
+            border-radius: 5px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+
+        /* ======= CONFIG PANEL ======= */
+        .divider {
+            border-top: 1px solid var(--border);
+            padding-top: 10px;
+        }
+
+        .config-toggle {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: none;
+            border: none;
+            color: var(--muted);
+            font-size: .72rem;
+            cursor: pointer;
+            font-family: inherit;
+            padding: 3px 0;
+            transition: color .2s;
+        }
+
+        .config-toggle:hover {
+            color: var(--text);
+        }
+
+        .config-panel {
+            margin-top: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .field {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .field label {
+            font-size: .68rem;
+            font-weight: 500;
+            color: var(--sub);
+            min-width: 150px;
+            font-family: 'SF Mono', 'Fira Code', monospace;
+        }
+
+        .field input,
+        .field select {
+            flex: 1;
+            background: rgba(255, 255, 255, .04);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 5px 9px;
+            font-size: .72rem;
+            color: var(--text);
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            transition: border-color .2s;
+        }
+
+        .field input:focus,
+        .field select:focus {
+            outline: none;
+            border-color: rgba(102, 126, 234, .5);
+        }
+
+        .field-hint {
+            font-size: .62rem;
+            color: var(--muted);
+            margin-top: 1px;
+            margin-left: 158px;
+        }
+
+        /* ======= ACTIONS ======= */
+        .actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-top: 1px solid var(--border);
+            padding-top: 12px;
+        }
+
+        .btn-run {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 7px 16px;
+            background: linear-gradient(135deg, #22c55e, #16a34a);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: .78rem;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .2s;
+            box-shadow: 0 2px 10px rgba(34, 197, 94, .25);
+        }
+
+        .btn-run:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 14px rgba(34, 197, 94, .35);
+        }
+
+        .btn-run:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-cancel {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 7px 14px;
+            background: rgba(239, 68, 68, .12);
+            color: #ef4444;
+            border: 1px solid rgba(239, 68, 68, .25);
+            border-radius: 8px;
+            font-size: .76rem;
+            font-weight: 500;
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .2s;
+        }
+
+        .btn-cancel:hover {
+            background: rgba(239, 68, 68, .2);
+        }
+
+        .run-link {
+            margin-left: auto;
+            font-size: .72rem;
+            color: var(--muted);
+            text-decoration: none;
+            transition: color .2s;
+        }
+
+        .run-link:hover {
+            color: var(--blue);
+        }
+
+        .status-text {
+            margin-left: auto;
+            font-size: .72rem;
+            font-weight: 500;
+            color: var(--muted);
+        }
+
+        .status-text.running,
+        .status-text.queued {
+            color: var(--green);
+        }
+
+        .status-text.in_progress {
+            color: var(--yellow);
+        }
+
+        .status-text.failure,
+        .status-text.cancelled {
+            color: var(--red);
+        }
+
+        .status-text.success {
+            color: var(--blue);
+        }
+
+        /* ======= LOADING ======= */
+        .spinner {
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255, 255, 255, .15);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin .6s linear infinite;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg)
+            }
+        }
+
+        /* ======= TOAST ======= */
+        #toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            background: #1e293b;
+            border: 1px solid var(--border-act);
+            color: var(--text);
+            padding: 12px 18px;
+            border-radius: 10px;
+            font-size: .8rem;
+            transform: translateY(80px);
+            opacity: 0;
+            transition: all .3s;
+            z-index: 9999;
+            max-width: 320px;
+        }
+
+        #toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        #toast.error {
+            border-color: rgba(239, 68, 68, .4);
+            background: #2d1919;
+        }
+
+        #toast.ok {
+            border-color: rgba(34, 197, 94, .4);
+            background: #192d1c;
+        }
+
+        @media(max-width:820px) {
+            .grid {
+                grid-template-columns: 1fr
+            }
+
+            .header-content {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 8px
+            }
+
+            .field {
+                flex-direction: column;
+                align-items: stretch
+            }
+
+            .field label {
+                min-width: auto
+            }
+
+            .field-hint {
+                margin-left: 0
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- ========== AUTH OVERLAY ========== -->
+    <div id="auth-overlay">
+        <div class="auth-box">
+            <div class="auth-logo">🕷️</div>
+            <h2>Scraper Dashboard</h2>
+            <p>Enter your GitHub credentials to manage<br>all scraping workflows from one place.</p>
+
+            <div class="auth-field">
+                <label>GitHub Personal Access Token</label>
+                <input type="password" id="token-input" placeholder="ghp_xxxxxxxxxxxxxxxxxxxx" />
+                <p class="auth-hint">
+                    Need a token? <a href="https://github.com/settings/tokens/new?scopes=repo,workflow" target="_blank"
+                        style="color:#667eea">Create one here</a> with <code>repo</code> + <code>workflow</code> scopes.
+                </p>
+            </div>
+
+            <div class="auth-field">
+                <label>Repository (owner/repo)</label>
+                <input type="text" id="repo-input" placeholder="username/repo-name" />
+            </div>
+
+            <button class="btn-primary" onclick="login()">Connect →</button>
+        </div>
+    </div>
+
+    <!-- ========== HEADER ========== -->
+    <header class="header" id="main-header" style="display:none">
+        <div class="header-content">
+            <div class="logo-row">
+                <div class="logo-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5">
+                        <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                    </svg>
+                </div>
+                <div>
+                    <h1>Scraper Dashboard</h1>
+                    <p class="subtitle">GitHub Actions Workflow Manager</p>
+                </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px">
+                <span class="repo-badge" id="repo-display"></span>
+                <div class="stats-pill">
+                    <span><b id="total-count">0</b> workflows</span>
+                    <span style="opacity:.3">·</span>
+                    <span style="color:var(--green)"><b id="running-count">0</b> active</span>
+                </div>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+                <button class="logout-btn" onclick="syncFork()" style="border-color:#667eea;color:#667eea">
+                    Sync Fork
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- ========== FILTER ========== -->
+    <div class="filter-bar" id="filter-bar" style="display:none">
+        <div class="filter-inner" id="filter-inner">
+            <button class="filter-btn active" onclick="setFilter('all')">All</button>
+        </div>
+    </div>
+
+    <!-- ========== MAIN ========== -->
+    <main class="container" id="main-content" style="display:none">
+        <div class="grid" id="grid"></div>
+    </main>
+
+    <div id="toast"></div>
+
+    <script>
+        // ===== WORKFLOW DEFINITIONS =====
+        // Each maps to an existing .github/workflows/*.yml file.
+        // `inputs` mirrors the workflow_dispatch inputs exactly.
+        const WORKFLOWS = [
+            {
+                key: 'cymax-sitemap-products',
+                file: 'cymax-sitemap-products.yml',
+                name: 'Cymax Sitemap',
+                desc: 'Discover product URLs from Cymax sitemaps via FlareSolverr',
+                category: 'FlareSolverr',
+                color: '#FF6B6B',
+                inputs: [
+                    { id: 'sites', label: 'sites', default: 'www.cymax.com', hint: 'Comma-separated site list' },
+                    { id: 'output_csv', label: 'output_csv', default: 'cymax_url.csv' },
+                    { id: 'sitemap_offset', label: 'sitemap_offset', default: '1' },
+                    { id: 'max_sitemaps', label: 'max_sitemaps', default: '2' },
+                    { id: 'sitemaps_per_job', label: 'sitemaps_per_job', default: '1' },
+                    { id: 'max_urls_per_sitemap', label: 'max_urls_per_sitemap', default: '5' },
+                ]
+            },
+            {
+                key: 'drl-scrapper',
+                file: 'drl-scrapper.yml',
+                name: 'DRL / TVS / DRO / BFD',
+                desc: 'Scrape Discount Living Rooms and similar stores via sitemap',
+                category: 'Sitemap',
+                color: '#4ECDC4',
+                inputs: [
+                    { id: 'url', label: 'url', default: 'https://www.discountlivingrooms.com', hint: 'Base site URL' },
+                    { id: 'total_sitemaps', label: 'total_sitemaps', default: '0' },
+                    { id: 'sitemaps_per_job', label: 'sitemaps_per_job', default: '2' },
+                    { id: 'urls_per_sitemap', label: 'urls_per_sitemap', default: '100' },
+                    { id: 'max_workers', label: 'max_workers', default: '4' },
+                    { id: 'request_delay', label: 'request_delay', default: '1.0' },
+                ]
+            },
+            {
+                key: 'em-scrapper',
+                file: 'em-scrapper.yml',
+                name: 'Emma Mason (FlareSolverr)',
+                desc: 'Scrape Emma Mason with dynamic FlareSolverr instance pool',
+                category: 'FlareSolverr',
+                color: '#45B7D1',
+                inputs: [
+                    { id: 'url', label: 'url', default: 'https://www.emmamason.com' },
+                    { id: 'total_sitemaps', label: 'total_sitemaps', default: '0' },
+                    { id: 'sitemaps_per_job', label: 'sitemaps_per_job', default: '2' },
+                    { id: 'urls_per_sitemap', label: 'urls_per_sitemap', default: '100' },
+                    { id: 'max_workers', label: 'max_workers', default: '10' },
+                    { id: 'flaresolverr_instances', label: 'flaresolverr_instances', default: '0', hint: '0 = same as max_workers' },
+                    { id: 'request_delay', label: 'request_delay', default: '0' },
+                    { id: 'global_rate_limit', label: 'global_rate_limit', default: 'false', type: 'select', options: ['false', 'true'] },
+                    { id: 'sample_size', label: 'sample_size', default: '5' },
+                ]
+            },
+            {
+                key: 'em-algolia-scrapper',
+                file: 'em-algolia-scrapper.yml',
+                name: 'Emma Mason Algolia',
+                desc: 'Fetch Emma Mason products from Algolia search index',
+                category: 'API',
+                color: '#96CEB4',
+                inputs: [
+                    { id: 'page', label: 'page', default: '0', hint: '0 = all pages' },
+                    { id: 'hits_per_page', label: 'hits_per_page', default: '24' },
+                    { id: 'max_workers', label: 'max_workers', default: '8' },
+                    { id: 'request_delay', label: 'request_delay', default: '0.1' },
+                    { id: 'timeout', label: 'timeout', default: '30' },
+                    { id: 'retries', label: 'retries', default: '3' },
+                ]
+            },
+            {
+                key: 'fp-fc-scrapper',
+                file: 'fp-fc-scrapper.yml',
+                name: 'FurnitureCart / FurniturePick',
+                desc: 'Scrape FurnitureCart with bundle variation support via FlareSolverr',
+                category: 'FlareSolverr',
+                color: '#FFEAA7',
+                inputs: [
+                    { id: 'url', label: 'url', default: 'https://www.furniturecart.com' },
+                    { id: 'total_sitemaps', label: 'total_sitemaps', default: '0' },
+                    { id: 'urls_per_sitemap', label: 'urls_per_sitemap', default: '1000' },
+                    { id: 'urls_per_job', label: 'urls_per_job', default: '500' },
+                    { id: 'max_workers', label: 'max_workers', default: '4' },
+                    { id: 'request_delay', label: 'request_delay', default: '1.0' },
+                    { id: 'sample_size', label: 'sample_size', default: '5' },
+                ]
+            },
+            {
+                key: 'graphql',
+                file: 'graphql.yaml',
+                name: 'Home Depot GraphQL',
+                desc: 'Scrape Home Depot products via GraphQL API',
+                category: 'GraphQL',
+                color: '#DDA0DD',
+                inputs: [
+                    { id: 'url', label: 'url', default: 'https://www.homedepot.com' },
+                    { id: 'total_sitemaps', label: 'total_sitemaps', default: '0' },
+                    { id: 'sitemaps_per_job', label: 'sitemaps_per_job', default: '2' },
+                    { id: 'urls_per_sitemap', label: 'urls_per_sitemap', default: '100' },
+                    { id: 'max_workers', label: 'max_workers', default: '4' },
+                    { id: 'request_delay', label: 'request_delay', default: '1.0' },
+                    { id: 'graphql_url', label: 'graphql_url', default: 'https://apionline.homedepot.com/federation-gateway/graphql?opname=productClientOnlyProduct' },
+                    { id: 'store_id', label: 'store_id', default: '1710' },
+                    { id: 'zip_code', label: 'zip_code', default: '96913' },
+                ]
+            },
+            {
+                key: 'gshopping',
+                file: 'gshopping.yml',
+                name: 'Google Shopping',
+                desc: 'Scrape Google Shopping competitor data (Selenium + CAPTCHA solver)',
+                category: 'Selenium',
+                color: '#F39C12',
+                inputs: []
+            },
+            {
+                key: 'gshopping-multi',
+                file: 'gshopping-multi.yml',
+                name: 'Google Shopping Multi',
+                desc: 'Google Shopping scraper with parallel keyword processing',
+                category: 'Selenium',
+                color: '#E67E22',
+                inputs: []
+            },
+            {
+                key: 'gshopping_flaresolver',
+                file: 'gshopping_flaresolver.yml',
+                name: 'Google Shopping (FlareSolverr)',
+                desc: 'Google Shopping via FlareSolverr bypass',
+                category: 'FlareSolverr',
+                color: '#E74C3C',
+                inputs: []
+            },
+            {
+                key: 'gshopping_keyword',
+                file: 'gshopping_keyword.yml',
+                name: 'Google Shopping Keywords',
+                desc: 'Keyword-based Google Shopping competitor scraper',
+                category: 'Selenium',
+                color: '#C0392B',
+                inputs: []
+            },
+            {
+                key: 'ovs-bbb',
+                file: 'ovs-bbb.yml',
+                name: 'Overstock + BBB',
+                desc: 'Scrape Overstock products and cross-reference with BBB',
+                category: 'API',
+                color: '#8E44AD',
+                inputs: [
+                    { id: 'url', label: 'url', default: '', hint: 'Overstock base URL' },
+                    { id: 'total_sitemaps', label: 'total_sitemaps', default: '0' },
+                    { id: 'sitemaps_per_job', label: 'sitemaps_per_job', default: '2' },
+                    { id: 'urls_per_sitemap', label: 'urls_per_sitemap', default: '100' },
+                    { id: 'max_workers', label: 'max_workers', default: '4' },
+                    { id: 'request_delay', label: 'request_delay', default: '1.0' },
+                ]
+            },
+            {
+                key: 'bbb-ovs-sku',
+                file: 'bbb-ovs-sku.yml',
+                name: 'BBB SKU Extractor',
+                desc: 'Extract SKUs from BBB API for OVS variant IDs',
+                category: 'API',
+                color: '#9B59B6',
+                inputs: [
+                    { id: 'input_filename', label: 'input_filename', default: 'overstock_data.csv', hint: 'CSV filename on FTP' },
+                    { id: 'total_chunks', label: 'total_chunks', default: '4' },
+                    { id: 'api_url', label: 'api_url', default: 'https://api.bedbathandbeyond.com/options' },
+                ]
+            },
+            {
+                key: 'shopifyscrapper-cloudflare',
+                file: 'shopifyscrapper-cloudflare.yml',
+                name: 'Shopify (Cloudflare)',
+                desc: 'Scrape Cloudflare-protected Shopify stores',
+                category: 'Cloudflare',
+                color: '#1ABC9C',
+                inputs: [
+                    { id: 'url', label: 'url', default: 'https://www.graysonliving.com' },
+                    { id: 'total_sitemaps', label: 'total_sitemaps', default: '0' },
+                    { id: 'sitemaps_per_job', label: 'sitemaps_per_job', default: '2' },
+                    { id: 'urls_per_sitemap', label: 'urls_per_sitemap', default: '200' },
+                    { id: 'max_workers', label: 'max_workers', default: '3' },
+                    { id: 'request_delay', label: 'request_delay', default: '1.5' },
+                ]
+            },
+            {
+                key: 'shopifyscrapper-normal',
+                file: 'shopifyscrapper-normal.yml',
+                name: 'Shopify (Normal)',
+                desc: 'Scrape standard Shopify stores via .js product endpoint',
+                category: 'HTTP',
+                color: '#2ECC71',
+                inputs: [
+                    { id: 'url', label: 'url', default: 'https://www.graysonliving.com' },
+                    { id: 'total_sitemaps', label: 'total_sitemaps', default: '0' },
+                    { id: 'sitemaps_per_job', label: 'sitemaps_per_job', default: '2' },
+                    { id: 'urls_per_sitemap', label: 'urls_per_sitemap', default: '200' },
+                    { id: 'max_workers', label: 'max_workers', default: '8' },
+                ]
+            },
+        ];
+
+        // ===== STATE =====
+        let TOKEN = '', REPO = '', activeFilter = 'all';
+        let runStates = {}; // key -> {state, run_id, url}
+
+        // ===== AUTH =====
+        function login() {
+            TOKEN = document.getElementById('token-input').value.trim();
+            REPO = document.getElementById('repo-input').value.trim();
+            if (!TOKEN || !REPO) { toast('Please fill in both fields', 'error'); return; }
+            localStorage.setItem('gh_token', TOKEN);
+            localStorage.setItem('gh_repo', REPO);
+            showDashboard();
+        }
+        function logout() {
+            localStorage.removeItem('gh_token');
+            localStorage.removeItem('gh_repo');
+            TOKEN = ''; REPO = '';
+            document.getElementById('auth-overlay').style.display = 'flex';
+            document.getElementById('main-header').style.display = 'none';
+            document.getElementById('filter-bar').style.display = 'none';
+            document.getElementById('main-content').style.display = 'none';
+        }
+        function showDashboard() {
+            document.getElementById('auth-overlay').style.display = 'none';
+            document.getElementById('main-header').style.display = 'block';
+            document.getElementById('filter-bar').style.display = 'block';
+            document.getElementById('main-content').style.display = 'block';
+            document.getElementById('repo-display').textContent = REPO;
+            document.getElementById('total-count').textContent = WORKFLOWS.length;
+            buildFilters();
+            renderGrid();
+            pollRuns();
+        }
+
+        // Auto-restore session
+        window.addEventListener('DOMContentLoaded', () => {
+            TOKEN = localStorage.getItem('gh_token') || '';
+            REPO = localStorage.getItem('gh_repo') || '';
+            if (TOKEN && REPO) { showDashboard(); }
+        });
+
+        // ===== FILTERS =====
+        function buildFilters() {
+            const cats = [...new Set(WORKFLOWS.map(w => w.category))].sort();
+            const bar = document.getElementById('filter-inner');
+            bar.innerHTML = `<button class="filter-btn active" onclick="setFilter('all')">All</button>`;
+            cats.forEach(c => {
+                bar.innerHTML += `<button class="filter-btn" onclick="setFilter('${c}')">${c}</button>`;
+            });
+        }
+        function setFilter(f) {
+            activeFilter = f;
+            document.querySelectorAll('.filter-btn').forEach(b => {
+                b.classList.toggle('active', b.textContent.toLowerCase() === (f === 'all' ? 'all' : f.toLowerCase()));
+            });
+            renderGrid();
+        }
+
+        // ===== RENDER GRID =====
+        function renderGrid() {
+            const grid = document.getElementById('grid');
+            const shown = activeFilter === 'all' ? WORKFLOWS : WORKFLOWS.filter(w => w.category === activeFilter);
+            grid.innerHTML = shown.map(wf => cardHTML(wf)).join('');
+        }
+
+        function cardHTML(wf) {
+            const st = runStates[wf.key] || {};
+            const state = st.state || 'idle';
+            const hasCfg = wf.inputs.length > 0;
+            return `
+    <div class="card ${state}" id="card-${wf.key}" style="--c:${wf.color}">
+        <div>
+            <div class="title-row">
+                <div class="dot ${state}"></div>
+                <span class="card-title">${wf.name}</span>
+                <span class="badge">${wf.category}</span>
+            </div>
+            <p class="card-desc">${wf.desc}</p>
+            <p class="card-file"><code>${wf.file}</code></p>
+        </div>
+
+        ${hasCfg ? `
+        <div class="divider">
+            <button class="config-toggle" onclick="toggleConfig('${wf.key}')">
+                ⚙ Inputs <span id="arrow-${wf.key}">▸</span>
+            </button>
+            <div class="config-panel" id="cfg-${wf.key}" style="display:none">
+                ${wf.inputs.map(inp => `
+                <div>
+                    <div class="field">
+                        <label>${inp.label}</label>
+                        ${inp.type === 'select'
+                    ? `<select id="inp-${wf.key}-${inp.id}">
+                                    ${(inp.options || []).map(o => `<option value="${o}" ${o === inp.default ? 'selected' : ''}>${o}</option>`).join('')}
+                               </select>`
+                    : `<input id="inp-${wf.key}-${inp.id}" value="${escHtml(inp.default)}" placeholder="${inp.label}" />`
+                }
+                    </div>
+                    ${inp.hint ? `<p class="field-hint">${inp.hint}</p>` : ''}
+                </div>`).join('')}
+            </div>
+        </div>` : ''}
+
+        <div class="actions ${hasCfg ? '' : 'divider'}">
+            <button class="btn-run" id="run-btn-${wf.key}" onclick="runWorkflow('${wf.key}')">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                Run
+            </button>
+            <span class="status-text ${state}" id="status-lbl-${wf.key}">${stateLabel(state)}</span>
+            ${st.url ? `<a class="run-link" href="${st.url}" target="_blank">⤴ View run</a>` : ''}
+        </div>
+    </div>`;
+        }
+
+        function stateLabel(s) {
+            const map = { idle: 'Idle', queued: 'Queued…', in_progress: 'Running…', success: 'Completed', failure: 'Failed', cancelled: 'Cancelled' };
+            return map[s] || s;
+        }
+        function escHtml(s) {
+            return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+        function toggleConfig(key) {
+            const p = document.getElementById(`cfg-${key}`);
+            const a = document.getElementById(`arrow-${key}`);
+            const open = p.style.display !== 'none';
+            p.style.display = open ? 'none' : 'block';
+            a.textContent = open ? '▸' : '▾';
+        }
+
+        // ===== RUN WORKFLOW =====
+        async function runWorkflow(key) {
+            const wf = WORKFLOWS.find(w => w.key === key);
+            const btn = document.getElementById(`run-btn-${key}`);
+            btn.disabled = true;
+            btn.innerHTML = `<div class="spinner"></div> Triggering…`;
+
+            // Collect inputs
+            const inputs = {};
+            wf.inputs.forEach(inp => {
+                const el = document.getElementById(`inp-${key}-${inp.id}`);
+                if (el) inputs[inp.id] = el.value;
+            });
+
+            try {
+                const res = await ghFetch(`/repos/${REPO}/actions/workflows/${wf.file}/dispatches`, {
+                    method: 'POST',
+                    body: JSON.stringify({ ref: 'main', inputs })
+                });
+                if (res.status === 204 || res.ok) {
+                    toast(`✅ "${wf.name}" triggered! Polling for run…`, 'ok');
+                    runStates[key] = { state: 'queued' };
+                    updateCard(key);
+                    // wait a bit then poll
+                    setTimeout(() => fetchLatestRun(key), 4000);
+                } else {
+                    const body = await res.json().catch(() => ({}));
+                    toast(`❌ Failed: ${body.message || res.status}`, 'error');
+                }
+            } catch (e) {
+                toast(`❌ Network error: ${e.message}`, 'error');
+            }
+
+            btn.disabled = false;
+            btn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Run`;
+        }
+
+        // ===== POLL RUNS =====
+        async function fetchLatestRun(key) {
+            const wf = WORKFLOWS.find(w => w.key === key);
+            try {
+                const res = await ghFetch(`/repos/${REPO}/actions/workflows/${wf.file}/runs?per_page=1`);
+                if (!res.ok) return;
+                const data = await res.json();
+                const run = (data.workflow_runs || [])[0];
+                if (!run) return;
+                runStates[key] = {
+                    state: run.status === 'completed' ? run.conclusion : run.status,
+                    run_id: run.id,
+                    url: run.html_url
+                };
+                updateCard(key);
+            } catch (e) { }
+        }
+
+        async function pollRuns() {
+            const fetches = WORKFLOWS.map(wf => fetchLatestRun(wf.key));
+            await Promise.all(fetches);
+            const active = Object.values(runStates).filter(s => s.state === 'in_progress' || s.state === 'queued').length;
+            document.getElementById('running-count').textContent = active;
+            setTimeout(pollRuns, 8000);
+        }
+
+        function updateCard(key) {
+            const wf = WORKFLOWS.find(w => w.key === key);
+            const st = runStates[key] || {};
+            const state = st.state || 'idle';
+
+            const card = document.getElementById(`card-${key}`);
+            if (card) {
+                card.className = `card ${state}`;
+            }
+            const dot = card?.querySelector('.dot');
+            if (dot) { dot.className = `dot ${state}`; }
+
+            const lbl = document.getElementById(`status-lbl-${key}`);
+            if (lbl) { lbl.textContent = stateLabel(state); lbl.className = `status-text ${state}`; }
+
+            // update run link
+            const actions = card?.querySelector('.actions');
+            if (actions) {
+                const old = actions.querySelector('.run-link');
+                if (old) old.remove();
+                if (st.url) {
+                    const a = document.createElement('a');
+                    a.className = 'run-link';
+                    a.href = st.url;
+                    a.target = '_blank';
+                    a.textContent = '⤴ View run';
+                    actions.appendChild(a);
+                }
+            }
+
+            const active = Object.values(runStates).filter(s => s.state === 'in_progress' || s.state === 'queued').length;
+            document.getElementById('running-count').textContent = active;
+        }
+
+        // ===== SYNC FORK =====
+        async function syncFork() {
+            if (!REPO) {
+                toast('Repository not set', 'error');
+                return;
+            }
+
+            try {
+                toast('🔄 Syncing fork with upstream...', '');
+
+                const res = await ghFetch(`/repos/${REPO}/merge-upstream`, {
+                    method: 'POST',
+                    body: JSON.stringify({ branch: 'main' })
+                });
+
+                if (res.ok) {
+                    toast('✅ Fork synced successfully!', 'ok');
+                } else {
+                    const body = await res.json().catch(() => ({}));
+                    toast(`❌ Sync failed: ${body.message || res.status}`, 'error');
+                }
+            } catch (e) {
+                toast(`❌ Network error: ${e.message}`, 'error');
+            }
+        }
+        // ===== GITHUB API =====
+        async function ghFetch(path, opts = {}) {
+            return fetch(`https://api.github.com${path}`, {
+                ...opts,
+                headers: {
+                    'Authorization': `Bearer ${TOKEN}`,
+                    'Accept': 'application/vnd.github+json',
+                    'X-GitHub-Api-Version': '2022-11-28',
+                    'Content-Type': 'application/json',
+                    ...(opts.headers || {})
+                }
+            });
+        }
+
+        // ===== TOAST =====
+        let toastTimer;
+        function toast(msg, type = '') {
+            const el = document.getElementById('toast');
+            el.textContent = msg;
+            el.className = `show ${type}`;
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { el.className = ''; }, 3500);
+        }
+    </script>
+</body>
+
+</html>

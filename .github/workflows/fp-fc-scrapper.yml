@@ -1,0 +1,300 @@
+name: FP FC Scraper with FlareSolverr (Chunked)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Base site URL"
+        required: true
+        default: "https://www.furniturecart.com"
+      total_sitemaps:
+        description: "Total sitemaps to process (0 = auto)"
+        default: "0"
+      urls_per_sitemap:
+        description: "Max URLs to take from one sitemap (0 = all)"
+        default: "1000"
+      urls_per_job:
+        description: "Max URLs to process per job (splits large sitemaps)"
+        default: "500"
+      max_workers:
+        description: "Parallel requests per job"
+        default: "4"
+      request_delay:
+        description: "Delay between requests (seconds)"
+        default: "1.0"
+      sample_size:
+        description: "URLs to sample for product detection"
+        default: "5"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+        options: --cap-add=SYS_ADMIN
+    outputs:
+      matrix: ${{ steps.generate_matrix.outputs.matrix }}
+      site_name: ${{ steps.get_site_name.outputs.site_name }}
+    steps:
+      - uses: actions/checkout@v4   # Needed to access generate_chunks.py
+
+      - name: Get site name from URL
+        id: get_site_name
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          SITE_NAME=$(echo "$URL" | sed -E 's|https?://||;s|www\.||;s|\.[a-zA-Z]+(/.*)?$||;s|/.*||')
+          echo "site_name=$SITE_NAME" >> $GITHUB_OUTPUT
+          echo "Site name extracted: $SITE_NAME"
+
+      - name: Wait for FlareSolverr to be ready
+        run: |
+          echo "Waiting for FlareSolverr service to be ready..."
+          sleep 10
+          for i in {1..30}; do
+            if curl -s -f -X POST http://localhost:8191/v1 \
+              -H "Content-Type: application/json" \
+              -d '{"cmd": "sessions.list"}' > /dev/null 2>&1; then
+              echo "✓ FlareSolverr is ready!"
+              break
+            fi
+            echo "Attempt $i: FlareSolverr not ready yet..."
+            sleep 2
+            if [ $i -eq 30 ]; then
+              echo "❌ FlareSolverr failed to start after 60 seconds"
+              docker logs flaresolverr || true
+              exit 1
+            fi
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Generate chunk matrix
+        id: generate_matrix
+        env:
+          CURR_URL: ${{ github.event.inputs.url }}
+          MAX_SITEMAPS: ${{ github.event.inputs.total_sitemaps }}
+          MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
+          URLS_PER_JOB: ${{ github.event.inputs.urls_per_job }}
+          SITEMAP_OFFSET: 0
+          FLARESOLVERR_URL: http://localhost:8191/v1
+        run: python fpfc/generate_chunks.py   # <-- external script
+
+      - name: Debug matrix output
+        run: |
+          echo "Generated matrix:"
+          echo '${{ steps.generate_matrix.outputs.matrix }}' | jq . || echo "Not valid JSON"
+
+  scrape:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+        options: --cap-add=SYS_ADMIN
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for FlareSolverr
+        run: |
+          sleep 10
+          for i in {1..30}; do
+            if curl -s -f -X POST http://localhost:8191/v1 \
+              -H "Content-Type: application/json" \
+              -d '{"cmd": "sessions.list"}' > /dev/null 2>&1; then
+              echo "✓ FlareSolverr ready"
+              break
+            fi
+            sleep 2
+          done
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: Run scraper chunk
+        id: scrape_run
+        continue-on-error: true
+        env:
+          SITEMAP_URL: ${{ matrix.sitemap_url }}
+          URL_OFFSET: ${{ matrix.offset }}
+          MAX_URLS_PER_SITEMAP: ${{ matrix.limit }}
+          CHUNK_ID: ${{ matrix.chunk_id }}
+          CURR_URL: ${{ matrix.base_url }}
+          MAX_WORKERS: ${{ github.event.inputs.max_workers }}
+          REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
+          SAMPLE_SIZE: ${{ github.event.inputs.sample_size }}
+          FLARESOLVERR_URL: http://localhost:8191/v1
+        run: |
+          echo "Processing chunk $CHUNK_ID"
+          echo "Sitemap: $SITEMAP_URL"
+          echo "Offset: $URL_OFFSET, Limit: $MAX_URLS_PER_SITEMAP"
+          python fpfc/fp_fc_scraper.py || echo "Scraper failed with exit code $?"
+
+      - name: Upload chunk artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chunk_${{ matrix.chunk_id }}
+          path: products_chunk_*.csv
+          if-no-files-found: warn
+
+  merge:
+    needs: [plan, scrape]
+    runs-on: ubuntu-latest
+    if: always() && !cancelled()
+    steps:
+      - name: Download all chunks
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          path: chunks
+          pattern: chunk_*
+          merge-multiple: true
+
+      - name: Check for CSV files
+        id: check_files
+        run: |
+          CSV_FILES=$(find chunks -name "products_chunk_*.csv" 2>/dev/null || echo "")
+          if [ -z "$CSV_FILES" ]; then
+            echo "has_files=false" >> $GITHUB_OUTPUT
+            echo "ERROR: No CSV files found in artifacts!"
+            exit 0
+          else
+            echo "has_files=true" >> $GITHUB_OUTPUT
+            echo "Found CSV files:"
+            echo "$CSV_FILES"
+            CHUNK_COUNT=$(echo "$CSV_FILES" | wc -l)
+            echo "chunk_count=$CHUNK_COUNT" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge CSV chunks
+        id: merge_csv
+        if: steps.check_files.outputs.has_files == 'true'
+        run: |
+          echo "Merging CSV chunks..."
+          CSV_FILES=$(find chunks -name "products_chunk_*.csv")
+          FIRST_FILE=$(echo "$CSV_FILES" | head -n 1)
+          echo "Using header from: $FIRST_FILE"
+          head -n 1 "$FIRST_FILE" > products_full.csv
+          TOTAL_ROWS=0
+          FILE_COUNT=0
+          for f in $CSV_FILES; do
+            if [ -f "$f" ]; then
+              FILE_COUNT=$((FILE_COUNT + 1))
+              ROWS=$(tail -n +2 "$f" 2>/dev/null | wc -l || echo "0")
+              TOTAL_ROWS=$((TOTAL_ROWS + ROWS))
+              echo "Processing $f: $ROWS rows"
+              tail -n +2 "$f" 2>/dev/null | sed '/^$/d' >> products_full.csv
+            fi
+          done
+          FINAL_ROWS=$(tail -n +2 products_full.csv 2>/dev/null | wc -l || echo "0")
+          echo "Merged $FINAL_ROWS rows from $FILE_COUNT files"
+          echo "file_count=$FILE_COUNT" >> $GITHUB_OUTPUT
+          echo "final_rows=$FINAL_ROWS" >> $GITHUB_OUTPUT
+
+      - name: Build output filename
+        id: meta
+        run: |
+          SITE_NAME="${{ needs.plan.outputs.site_name }}"
+          if [ -z "$SITE_NAME" ]; then
+            SITE_NAME="fp_fc"
+          fi
+          DATE=$(date +%F_%H%M%S)
+          echo "name=${SITE_NAME}_${DATE}.csv" >> $GITHUB_OUTPUT
+          echo "Generated filename: ${SITE_NAME}_${DATE}.csv"
+
+      - name: Upload to FTP (if merge succeeded)
+        if: steps.merge_csv.outputs.final_rows > 0
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_BASE_DIR: ${{ secrets.FTP_PATH }}
+          FILE: ${{ steps.meta.outputs.name }}
+        run: |
+          if [ -z "$FTP_HOST" ] || [ -z "$FTP_USER" ] || [ -z "$FTP_PASS" ]; then
+            echo "FTP credentials not configured. Skipping FTP upload."
+            exit 0
+          fi
+          sudo apt-get update && sudo apt-get install -y lftp
+          lftp -u "$FTP_USER","$FTP_PASS" "$FTP_HOST" <<EOF
+          set ftp:ssl-allow no
+          set cmd:fail-exit yes
+          cd $FTP_BASE_DIR
+          put products_full.csv -o $FILE
+          bye
+          EOF
+          echo "Upload completed: $FILE"
+
+      - name: Create summary report
+        run: |
+          SITE_NAME="${{ needs.plan.outputs.site_name }}"
+          SITE_URL="${{ github.event.inputs.url }}"
+          OUTPUT_FILE="${{ steps.meta.outputs.name }}"
+          FILE_COUNT="${{ steps.merge_csv.outputs.file_count || '0' }}"
+          TOTAL_ROWS="${{ steps.merge_csv.outputs.final_rows || '0' }}"
+          SUCCESSFUL_CHUNKS="${{ steps.check_files.outputs.chunk_count || '0' }}"
+          PLANNED_JOBS="${{ fromJson(needs.plan.outputs.matrix).length || '0' }}"
+          
+          echo "========================================="
+          echo "          SCRAPING SUMMARY"
+          echo "========================================="
+          echo "Site Name:       $SITE_NAME"
+          echo "Site URL:        $SITE_URL"
+          echo "Output File:     $OUTPUT_FILE"
+          echo ""
+          echo "Job Status:"
+          echo "  Planned Jobs:  $PLANNED_JOBS"
+          echo "  Successful:    $SUCCESSFUL_CHUNKS"
+          echo "  Failed:        $((PLANNED_JOBS - SUCCESSFUL_CHUNKS))"
+          echo ""
+          echo "Results:"
+          echo "  Total Files:    $FILE_COUNT chunks"
+          echo "  Total Products: $TOTAL_ROWS rows"
+          echo ""
+          echo "Configuration:"
+          echo "  Max Workers:   ${{ github.event.inputs.max_workers }}"
+          echo "  Request Delay: ${{ github.event.inputs.request_delay }}s"
+          echo "  URLs/Sitemap:  ${{ github.event.inputs.urls_per_sitemap }}"
+          echo "  URLs/Job:      ${{ github.event.inputs.urls_per_job }}"
+          echo "  Total Sitemaps: ${{ github.event.inputs.total_sitemaps }}"
+          echo "  Sample Size:   ${{ github.event.inputs.sample_size }}"
+          echo "  FlareSolverr:  Enabled"
+          echo "========================================="
+          
+          if [ -f "products_full.csv" ]; then
+            echo ""
+            echo "First 3 rows of data:"
+            echo "======================"
+            head -n 4 products_full.csv
+          else
+            echo ""
+            echo "No data was successfully scraped!"
+          fi
+
+      - name: Archive final results
+        if: steps.merge_csv.outputs.final_rows > 0
+        uses: actions/upload-artifact@v4
+        with:
+          name: final_results
+          path: products_full.csv
+          retention-days: 7

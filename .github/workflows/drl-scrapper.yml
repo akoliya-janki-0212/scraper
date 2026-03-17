@@ -1,0 +1,136 @@
+name: DRL/TVS/DRO/BFD Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Base site URL"
+        required: true
+        default: "https://www.discountlivingrooms.com"
+      total_sitemaps:
+        description: "Total sitemaps to process (0 = auto)"
+        default: "0"
+      sitemaps_per_job:
+        description: "Sitemaps per parallel job"
+        default: "2"
+      urls_per_sitemap:
+        description: "Max URLs per sitemap"
+        default: "100"
+      max_workers:
+        description: "Parallel requests per job"
+        default: "4"
+      request_delay:
+        description: "Delay between requests (seconds)"
+        default: "1.0"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      site_name: ${{ steps.get_site_name.outputs.site_name }}
+    steps:
+      - name: Get site name from URL
+        id: get_site_name
+        run: |
+          URL="${{ github.event.inputs.url }}"
+          SITE_NAME=$(echo "$URL" | sed -E 's|https?://||;s|www\.||;s|\.[a-zA-Z]+(/.*)?$||;s|/.*||')
+          echo "site_name=$SITE_NAME" >> $GITHUB_OUTPUT
+
+      - id: matrix
+        run: |
+          TOTAL=${{ github.event.inputs.total_sitemaps }}
+          PER_JOB=${{ github.event.inputs.sitemaps_per_job }}
+          URL="${{ github.event.inputs.url }}"
+
+          if [ "$TOTAL" -eq 0 ]; then
+            TOTAL=10
+          fi
+
+          JOBS=$(( (TOTAL + PER_JOB - 1) / PER_JOB ))
+
+          MATRIX="["
+          for ((i=0;i<JOBS;i++)); do
+            OFFSET=$(( i * PER_JOB ))
+            MATRIX+="{\"offset\":$OFFSET,\"limit\":$PER_JOB,\"url\":\"$URL\"},"
+          done
+          MATRIX="${MATRIX%,}]"
+
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+
+  scrape:
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Run scraper
+        env:
+          CURR_URL: ${{ matrix.url }}
+          SITEMAP_OFFSET: ${{ matrix.offset }}
+          MAX_SITEMAPS: ${{ matrix.limit }}
+          MAX_URLS_PER_SITEMAP: ${{ github.event.inputs.urls_per_sitemap }}
+          MAX_WORKERS: ${{ github.event.inputs.max_workers }}
+          REQUEST_DELAY: ${{ github.event.inputs.request_delay }}
+        run: |
+          python drl/dlr_scraper.py
+
+      - name: Upload chunk
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk_${{ matrix.offset }}
+          path: products_chunk_*.csv
+          if-no-files-found: warn
+
+  merge:
+    needs: [plan, scrape]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all chunks
+        uses: actions/download-artifact@v4
+        with:
+          path: chunks
+          pattern: chunk_*
+          merge-multiple: true
+
+      - name: Merge CSV chunks
+        id: merge_csv
+        run: |
+          CSV_FILES=$(find chunks -name "products_chunk_*.csv" 2>/dev/null)
+          FIRST_FILE=$(echo "$CSV_FILES" | head -n 1)
+          head -n 1 "$FIRST_FILE" > products_full.csv
+          for f in $CSV_FILES; do
+            tail -n +2 "$f" 2>/dev/null | sed '/^$/d' >> products_full.csv
+          done
+
+      - name: Build output filename
+        id: meta
+        run: |
+          SITE_NAME="${{ needs.plan.outputs.site_name }}"
+          [ -z "$SITE_NAME" ] && SITE_NAME="site"
+          DATE=$(date +%F_%H%M%S)
+          echo "name=${SITE_NAME}_${DATE}.csv" >> $GITHUB_OUTPUT
+          mv products_full.csv "${SITE_NAME}_${DATE}.csv"
+
+      - name: Archive results
+        uses: actions/upload-artifact@v4
+        with:
+          name: final_results
+          path: ${{ steps.meta.outputs.name }}
+          retention-days: 7

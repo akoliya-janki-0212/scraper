@@ -6,253 +6,171 @@ import os
 from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.action_chains import ActionChains
 import time
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, WebDriverException, SessionNotCreatedException
 import undetected_chromedriver as uc
 import csv
 import traceback
 import pandas as pd
 import argparse
-import urllib.request
-import pydub
-from selenium.webdriver.common.keys import Keys
+import re
+import shutil
+from urllib.parse import urlparse, unquote
 
-recaptcha_words = [
-    "apple tree", "blue sky", "silver coin", "happy child", "gold star",
-    "fast car", "river bank", "mountain peak", "red house", "sun flower",
-    "deep ocean", "bright moon", "green grass", "snow fall", "strong wind",
-    "dark night", "big city", "tall building", "small village", "soft pillow",
-    "quiet room", "loud noise", "warm fire", "cold water", "heavy rain",
-    "hot coffee", "empty street", "open door", "closed window", "white cloud",
-    "yellow light", "long road", "short path", "new book", "old paper",
-    "broken clock", "silent night", "early morning", "late evening", "clear sky",
-    "dusty road", "sharp knife", "dull pencil", "lost key", "found wallet",
-    "strong bridge", "weak signal", "fast train", "slow boat", "hidden message",
-    "bright future", "dark past", "deep forest", "shallow lake", "frozen river",
-    "burning candle", "flying bird", "running horse", "jumping fish", "falling leaf",
-    "climbing tree", "rolling stone", "melting ice", "whispering wind", "shining star",
-    "crying baby", "laughing child", "singing voice", "barking dog", "meowing cat",
-    "chirping bird", "roaring lion", "galloping horse", "buzzing bee", "silent whisper",
-    "drifting boat", "rushing water", "ticking clock", "clicking sound", "typing keyboard",
-    "ringing bell", "blinking light", "floating balloon", "spinning wheel", "crashing waves",
-    "boiling water", "freezing air", "burning wood", "echoing voice", "howling wind",
-    "glowing candle", "rustling leaves", "dancing flame", "rattling chains", "splashing water",
-    "twisting road", "swinging door", "glistening snow", "pouring rain", "shaking ground"
+PRODUCT_FINAL_COLUMNS = [
+    "product_id",
+    "web_id",
+    "name",
+    "mpn_sku",
+    "gtin",
+    "brand",
+    "category",
+    "keyword",
+    "url",
+    "osb_url",
+    "last_response",
+    "osb_url_match",
+    "product_url",
+    "seller",
+    "product_name",
+    "cid",
+    "pid",
+    "last_fetched_date",
+    "osb_position",
+    "osb_id",
+    "seller_count",
+    "status",
 ]
-def voicereco(AUDIO_FILE):
-    import speech_recognition as sr
+# Import the existing captcha solving functions
+try:
+    from solvecaptcha import solve_recaptcha_audio
+except ImportError:
+    # If solvecaptcha is not in same directory, try to import from current directory
+    import importlib.util
+    import sys
+    
+    # Add current directory to path
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    
+    try:
+        from solvecaptcha import solve_recaptcha_audio
+    except ImportError:
+        print("Warning: solvecaptcha module not found. Captcha solving will be disabled.")
+        
+        # Define a dummy function if module is not available
+        def solve_recaptcha_audio(driver):
+            print("Captcha solving module not available. Please install solvecaptcha.")
+            return "failed"
 
-    # Initialize recognizer
-    recognizer = sr.Recognizer()
-
-    # ✅ Use a raw string or double backslashes to avoid path issues
-
-    # Load the audio file
-    with sr.AudioFile(AUDIO_FILE) as source:
-        print("🔄 Processing audio file...")
-        recognizer.adjust_for_ambient_noise(source)
-        audio = recognizer.record(source)  # Read the entire audio file
-
+def setup_driver(max_attempts=3, base_delay=4):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        driver = None
         try:
-            text = recognizer.recognize_google(audio)
-            print("📝 Extracted Text:", text)
-            return text
-        except sr.UnknownValueError:
-            random_text = random.choice(recaptcha_words)
-            print("❌ Could not understand the audio.")
-            return random_text
-        except sr.RequestError:
-            print("❌ Could not request results, check your internet.")
-            return None
-def solve_recaptcha_audio(driver):
-    """
-    Solves the Google reCAPTCHA v2 audio challenge.
-
-    Arguments:
-    - driver: Selenium WebDriver instance
-    """
-
-    time.sleep(2)  # Initial wait
-
-    # ✅ Locate reCAPTCHA Iframes
-    frames = driver.find_elements(By.TAG_NAME, "iframe")
-    recaptcha_control_frame = None
-    recaptcha_challenge_frame = None
-
-    for frame in frames:
-        title = frame.get_attribute("title")
-        if "reCAPTCHA" in title:
-            recaptcha_control_frame = frame
-        if "challenge" in title:
-            recaptcha_challenge_frame = frame
-    time.sleep(random.uniform(2, 4))
-    # ✅ Click the reCAPTCHA Checkbox
-    if recaptcha_control_frame:
-        driver.switch_to.frame(recaptcha_control_frame)
-        driver.find_element(By.CLASS_NAME, "recaptcha-checkbox-border").click()
-        print("✅ Clicked reCAPTCHA checkbox")
-        time.sleep(random.uniform(2, 4))  # Random wait to mimic human behavior
-        driver.switch_to.default_content()
-
-    time.sleep(2)
-
-    # ✅ Switch to Challenge Frame
-    if recaptcha_challenge_frame:
-        try:
-            driver.switch_to.frame(recaptcha_challenge_frame)
             time.sleep(2)
-        except:
-            return "solved"
+            options = uc.ChromeOptions()
+            chrome_bin = os.environ.get("CHROME_BIN")
+            if chrome_bin:
+                options.binary_location = chrome_bin
 
-        # ✅ Click the "Get an audio challenge" button
-        try:
-            audio_button = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, "//button[@title='Get an audio challenge']"))
-            )
-            audio_button.click()
-            print("✅ Clicked 'Get an audio challenge' button")
-            time.sleep(2)
-        except:
-            print("❌ Could not find the audio challenge button.")
-            driver.switch_to.default_content()
-            return "quit"
+            # Comment out for local testing to see browser
+            # options.add_argument("--headless=new")
 
-        # ✅ Get the audio file URL
-        def get_audio(driver):
-            time.sleep(3)  # Increased wait time
+            options.add_argument("--start-maximized")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-infobars")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-popup-blocking")
+            options.add_argument("--disable-logging")
+            options.add_argument("--log-level=3")
+            options.add_argument("--remote-debugging-port=9222")
+            options.add_argument("--disable-background-timer-throttling")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-ipc-flooding-protection")
+            options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+            options.add_argument("--disable-renderer-backgrounding")
+            options.add_argument("--disable-features=IsolateOrigins,site-per-process")
+            options.add_argument("--disable-site-isolation-trials")
 
-            # Try multiple times to find audio source
-            max_attempts = 3
-            for attempt in range(max_attempts):
-                try:
-                    print(f"Attempt {attempt + 1} to find audio source...")
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+            ]
+            options.add_argument(f"user-agent={random.choice(user_agents)}")
 
-                    # Check if audio source is present
-                    audio_source = WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.ID, "audio-source"))
-                    )
-                    src = audio_source.get_attribute("src")
-
-                    if src and src.startswith("http"):
-                        print(f"✅ Audio source found: {src[:50]}...")
-                        break
-                    else:
-                        print("Audio source found but URL is invalid")
-                        time.sleep(2)
-                except:
-                    if attempt < max_attempts - 1:
-                        print("Audio source not found, retrying...")
-                        time.sleep(2)
-                    else:
-                        print("❌ Could not find the audio source after multiple attempts.")
-                        return "no audio"
-
-            # Rest of your audio processing code remains the same...
-            # ✅ Define file paths
-            mp3_path = os.path.join(os.getcwd(), "captcha_audio.mp3")
-            wav_path = os.path.join(os.getcwd(), "captcha_audio.wav")
-
-            try:
-                # ✅ Download the audio file
-                urllib.request.urlretrieve(src, mp3_path)
-                print("✅ Audio file downloaded.")
-
-                # ✅ Convert MP3 to WAV
-                sound = pydub.AudioSegment.from_mp3(mp3_path)
-                sound.export(wav_path, format="wav")
-                print("✅ Audio file converted to WAV.")
-            except Exception as e:
-                print(f"❌ Audio processing error: {e}")
-                return "quit"
-
-            # ✅ Call voicereco() to process the audio file
-            captcha_text = voicereco(wav_path)
-
-            if captcha_text:
-                print(f"📝 Recognized Text: {captcha_text}")
-                time.sleep(random.uniform(1, 3))
-
-                # ✅ Enter the recognized text into the response box
-                response_box = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.ID, "audio-response"))
-                )
-                response_box.send_keys(captcha_text.lower())
-                time.sleep(1)
-                response_box.send_keys(Keys.ENTER)
-                time.sleep(random.uniform(2, 3))
-
-                # Check if verification failed
-                try:
-                    error_msg = driver.find_element(By.XPATH, "//div[contains(text(), 'Try again')]")
-                    if error_msg:
-                        print("⚠️ Verification failed, trying again...")
-                        return "retry"
-                except:
-                    pass
-
-                return "success"
+            driver_path = os.environ.get("CHROMEDRIVER_BIN")
+            if driver_path:
+                service = Service(driver_path)
+                driver = uc.Chrome(options=options, service=service)
             else:
-                print("❌ Could not extract text from the audio.")
-                return "quit"
-        def submit(driver):
-            # ✅ Click the Submit Button
-            driver.switch_to.default_content()
-            driver.find_element(By.ID, "recaptcha-demo-submit").click()
-            print("🎉 CAPTCHA Solved!")
-            return "solved"
+                driver = uc.Chrome(options=options, version_main=146)
+            return driver
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            print(f"Driver start failed (attempt {attempt}/{max_attempts}): {msg}")
+            try:
+                if driver:
+                    driver.quit()
+            except Exception:
+                pass
+            if attempt < max_attempts:
+                time.sleep(base_delay * attempt + random.uniform(0, 2))
+    if last_err:
+        raise last_err
+    raise RuntimeError("Driver start failed with unknown error")
 
-        count=1
-        while True:
-            result=get_audio(driver)
-            if (result=="no audio" and count==1) or result=="quit":
-                return "quit"
-            elif result=="no audio" and count>1:
-                # try:
-                #     submit(driver)
-                # except:
-                #     return "solved"
-                return "solved"
-            count+=1
-    else :
-        return "solved"
+def is_driver_connectivity_error(err):
+    try:
+        msg = str(err).lower()
+    except Exception:
+        return False
+    return (
+        "chrome not reachable" in msg
+        or "cannot connect to chrome" in msg
+        or "disconnected" in msg
+        or "session not created" in msg
+    )
 
-def setup_driver():
-    time.sleep(2)
-    options = uc.ChromeOptions()
-    
-    # Comment out for local testing to see browser
-    # options.add_argument("--headless=new")
-    
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-popup-blocking")
-    options.add_argument("--disable-logging")
-    options.add_argument("--log-level=3")
-    options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("--disable-background-timer-throttling")
-    options.add_argument("--disable-backgrounding-occluded-windows")
-    options.add_argument("--disable-ipc-flooding-protection")
-    options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
-    options.add_argument("--disable-renderer-backgrounding")
+def build_error_result(product_id, keyword, url, message, status="error"):
+    return {
+        'product_id': product_id,
+        'keyword': keyword,
+        'url': url,
+        'last_response': message,
+        'status': status,
+        'last_fetched_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        'product_url': '',
+        'seller': '',
+        'product_name': '',
+        'cid': '',
+        'pid': '',
+        'osb_position': 0,
+        'osb_id': '',
+        'seller_count': 0,
+        'competitors': []
+    }
 
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-    ]
-    options.add_argument(f"user-agent={random.choice(user_agents)}")
-
-    driver = uc.Chrome(options=options)
-    return driver
+def save_remaining_df(df, chunk_id, round_id, output_dir, reason=None):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(output_dir, exist_ok=True)
+    csv3_filename = f"gshopping_remaining_round{round_id}_chunk{chunk_id}_{timestamp}.csv"
+    csv3_path = os.path.join(output_dir, csv3_filename)
+    df.to_csv(csv3_path, index=False)
+    if reason:
+        print(f"✓ Saved remaining rows: {csv3_filename} ({reason})")
+    else:
+        print(f"✓ Saved remaining rows: {csv3_filename}")
+    return csv3_path, len(df)
 
 def detects_recaptcha(driver):
     """Detect if reCAPTCHA is present on the page"""
@@ -273,20 +191,40 @@ def detects_recaptcha(driver):
         print(f"Error detecting reCAPTCHA: {e}")
         return False
 
+# In your main gscrapperci.py, update the handle_captcha function:
+
 def handle_captcha(driver, url):
-    """Handle captcha if detected"""
-    recaptcha = detects_recaptcha(driver)
-    if recaptcha:
-        print("Attempting to solve captcha...")
-        result = solve_recaptcha_audio(driver)
-        if result == "solved":
-            print("Captcha solved successfully!")
-            driver.switch_to.default_content()
-            return "solved"
+    """Handle captcha if detected with retry logic"""
+    max_retries = 1
+
+    for attempt in range(max_retries):
+        recaptcha = detects_recaptcha(driver)
+        if recaptcha:
+            print(f"Attempt {attempt + 1}/{max_retries} to solve captcha...")
+            result = solve_recaptcha_audio(driver)
+            
+            if result == "solved":
+                print("Captcha solved successfully!")
+                driver.switch_to.default_content()
+                return "solved"
+            else:
+                print(f"Captcha solving attempt {attempt + 1} failed")
+                
+                # if attempt < max_retries - 1:
+                #     # Try refreshing the page
+                #     print("Refreshing page and retrying...")
+                #     driver.refresh()
+                #     time.sleep(5)
+                # else:
+                #     print("All captcha solving attempts failed")
+                #     return "failed"
+                print("All captcha solving attempts failed")
+                return "failed"
         else:
-            print(f"Captcha solving failed: {result}")
-            return "failed"
-    return "no_captcha"
+            print("No reCAPTCHA found.")
+            return "no_captcha"
+    
+    return "failed"
 
 def start_new_driver(search_url):
     """Start a new driver and handle captcha if present"""
@@ -321,7 +259,7 @@ def download_csv_from_ftp(ftp_host, ftp_user, ftp_pass, ftp_path, remote_filenam
         print(f"Downloading {remote_filename} from FTP...")
         
         ftp = ftplib.FTP()
-        ftp.connect(ftp_host, 21)
+        ftp.connect(ftp_host, int(os.getenv("FTP_PORT", 21)))
         ftp.login(ftp_user, ftp_pass)
         ftp.set_pasv(True)
         
@@ -489,7 +427,27 @@ def get_product_options(driver):
     
     return json.dumps(scraped_data, indent=2)
 
-def scrape_product(driver, product_id, keyword, url):
+def normalize_url_path_slug(raw_url):
+    """Return normalized last path segment (slug), removing query/fragment."""
+    try:
+        if not raw_url:
+            return ""
+        cleaned = str(raw_url).strip()
+        if not cleaned or cleaned.lower() == "n/a":
+            return ""
+        if "://" not in cleaned and cleaned.startswith("www."):
+            cleaned = f"https://{cleaned}"
+
+        parsed = urlparse(cleaned)
+        path = unquote(parsed.path or "").strip()
+        path = re.sub(r"/+", "/", path).rstrip("/")
+        if not path:
+            return ""
+        return path.split("/")[-1].strip().lower()
+    except:
+        return ""
+
+def scrape_product(driver, product_id, keyword, url, osb_url=""):
     """Scrape individual product from Google Shopping"""
     try:
         print(f"\nScraping Product ID: {product_id}")
@@ -507,10 +465,18 @@ def scrape_product(driver, product_id, keyword, url):
                 'last_response': 'Captcha solving failed',
                 'status': 'captcha_failed',
                 'last_fetched_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                'competitors': []
+                'product_url': '',  # ADD THIS LINE
+                'seller': '',  # ADD THIS LINE
+                'product_name': '',  # ADD THIS LINE
+                'cid': '',  # ADD THIS LINE
+                'pid': '',  # ADD THIS LINE
+                'osb_position': 0,  # ADD THIS LINE
+                'osb_id': '',  # ADD THIS LINE
+                'seller_count': 0,  # ADD THIS LINE
+                'competitors': []  # Already present
             }
         
-        time.sleep(random.uniform(5, 10))
+        time.sleep(random.uniform(4, 8))
         
         # Initialize result structure
         result = {
@@ -537,7 +503,7 @@ def scrape_product(driver, product_id, keyword, url):
             result['last_response'] = "Product container found"
             result['status'] = "found"
         except Exception as e:
-            result['last_response'] = f"Product container not found: {str(e)}"
+            result['last_response'] = f"Product container not found: {str(e)[:20]}..."
             result['status'] = "container_not_found"
             return result
         
@@ -565,8 +531,15 @@ def scrape_product(driver, product_id, keyword, url):
             except:
                 cid = ""
             
-            # Check for Set keyword mismatch
-            if (not "Set" in product_name and "Set" in keyword) or ("Set" in product_name and not "Set" in keyword):
+            # Normalize keyword: remove "set of" (case-insensitive) before comparison
+            normalized_keyword = re.sub(r'\bset\s+of\b', '', keyword or '', flags=re.IGNORECASE)
+            normalized_product_name = re.sub(r'\bset\s+of\b', '', product_name or '', flags=re.IGNORECASE)
+
+            def has_set_word(text):
+                return bool(re.search(r'\bset\b', text or '', flags=re.IGNORECASE))
+
+            # Check for Set keyword mismatch (exact word match, case-insensitive)
+            if has_set_word(normalized_product_name) != has_set_word(normalized_keyword):
                 continue
             
             result.update({
@@ -598,7 +571,46 @@ def scrape_product(driver, product_id, keyword, url):
             except:
                 result['last_response'] = "Could not click product element"
         
-        result['product_url'] = driver.current_url
+        # Prefer the stable Google "Share link" URL from the right panel.
+        share_url = ""
+        try:
+            share_button = WebDriverWait(driver, 8).until(
+                EC.element_to_be_clickable((
+                    By.XPATH,
+                    "//div[contains(@class,'RSNrZe') and @role='button' and @aria-label='Share']"
+                ))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", share_button)
+            share_button.click()
+
+            share_dialog = WebDriverWait(driver, 8).until(
+                EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog' and @aria-label='Share']"))
+            )
+
+            try:
+                share_input = share_dialog.find_element(By.CSS_SELECTOR, "input[aria-label='Share link'][type='url']")
+                share_url = (share_input.get_attribute("value") or "").strip()
+            except:
+                share_url = ""
+
+            if not share_url:
+                try:
+                    share_url = share_dialog.find_element(By.CSS_SELECTOR, "div[jsname='tQ9n1c']").text.strip()
+                except:
+                    share_url = ""
+
+            # Close share dialog so it doesn't block following actions.
+            try:
+                close_button = share_dialog.find_element(By.CSS_SELECTOR, "[jsname='tqp7ud']")
+                close_button.click()
+            except:
+                try:
+                    ActionChains(driver).send_keys(u'\ue00c').perform()  # ESC
+                except:
+                    pass
+        except:
+            share_url = ""
+        result['product_url'] = share_url or driver.current_url
         
         # Try to get more stores
         i = 0
@@ -676,12 +688,17 @@ def scrape_product(driver, product_id, keyword, url):
             osb_position = 0
             seller_count = len(sellers)
             osb_id = ''
+            osb_url_match = False
             
             if search_seller in sellers:
                 osb_position = sellers.index(search_seller) + 1
                 for competitor in competitors:
                     if competitor['seller'] == search_seller:
-                        osb_id = competitor.get('seller_url', '').split('/')[-1] if competitor.get('seller_url') else ''
+                        seller_slug = normalize_url_path_slug(competitor.get('seller_url', ''))
+                        osb_id = seller_slug
+                        target_slug = normalize_url_path_slug(osb_url)
+                        if seller_slug and target_slug:
+                            osb_url_match = seller_slug == target_slug
                         break
             
             result.update({
@@ -689,6 +706,7 @@ def scrape_product(driver, product_id, keyword, url):
                 'seller_count': seller_count,
                 'osb_id': osb_id,
                 'status': 'completed',
+                'osb_url_match': f'{"Yes" if osb_url_match else "No"}',
                 'last_response': f'Completed - OSB Position: {osb_position}, Total Sellers: {seller_count}'
             })
             
@@ -711,133 +729,469 @@ def scrape_product(driver, product_id, keyword, url):
             'competitors': []
         }
 
-def process_chunk(chunk_file, chunk_id, total_chunks):
+def merge_csv_files(file_paths, output_path, sort_columns=None, expected_columns=None):
+    """Merge CSV files into one output CSV."""
+    valid_files = [p for p in file_paths if p and os.path.exists(p) and os.path.getsize(p) > 0]
+    if not valid_files:
+        return None, 0
+
+    frames = []
+    for path in valid_files:
+        try:
+            df = pd.read_csv(path)
+            if not df.empty:
+                frames.append(df)
+        except Exception as e:
+            print(f"Warning: Could not read {path}: {e}")
+
+    if not frames:
+        return None, 0
+
+    merged_df = pd.concat(frames, ignore_index=True)
+    if expected_columns:
+        for col in expected_columns:
+            if col not in merged_df.columns:
+                merged_df[col] = ""
+        merged_df = merged_df.loc[:, expected_columns]
+    if sort_columns:
+        available_cols = [c for c in sort_columns if c in merged_df.columns]
+        if available_cols:
+            merged_df = merged_df.sort_values(available_cols)
+
+    merged_df.to_csv(output_path, index=False)
+    return output_path, len(merged_df)
+
+
+def split_dataframe_to_chunk_files(df, output_dir, total_chunks, prefix):
+    """Split DataFrame into up to total_chunks chunk files and return file paths."""
+    os.makedirs(output_dir, exist_ok=True)
+    total_rows = len(df)
+    if total_rows == 0:
+        return []
+
+    chunk_count = max(1, min(int(total_chunks), total_rows))
+    base_size = total_rows // chunk_count
+    remainder = total_rows % chunk_count
+
+    chunk_files = []
+    start_idx = 0
+    for i in range(chunk_count):
+        extra = 1 if i < remainder else 0
+        end_idx = start_idx + base_size + extra
+        chunk_df = df.iloc[start_idx:end_idx]
+        if chunk_df.empty:
+            start_idx = end_idx
+            continue
+
+        chunk_file = os.path.join(output_dir, f"{prefix}_chunk_{i + 1}.csv")
+        chunk_df.to_csv(chunk_file, index=False)
+        chunk_files.append(chunk_file)
+        print(f"Prepared chunk {i + 1}/{chunk_count}: rows {start_idx + 1}-{end_idx}")
+        start_idx = end_idx
+
+    return chunk_files
+
+
+def process_chunk(chunk_file, chunk_id, total_chunks, round_id=1, output_dir='output'):
     """Process a chunk of products"""
+    df = None
     try:
-        # Get FTP credentials from environment
-        ftp_host = os.getenv('FTP_HOST')
-        ftp_user = os.getenv('FTP_USER')
-        ftp_pass = os.getenv('FTP_PASS')
-        ftp_path = os.getenv('FTP_PATH', '/scrap/')
-        
-        if not all([ftp_host, ftp_user, ftp_pass]):
-            print("Error: FTP credentials not found")
-            return False
-        
         # Read chunk file
         df = pd.read_csv(chunk_file)
+        if df.empty:
+            print(f"Chunk {chunk_id} is empty, skipping")
+            return {
+                "success": True,
+                "product_file": None,
+                "seller_file": None,
+                "remaining_file": None,
+                "product_rows": 0,
+                "seller_rows": 0,
+                "remaining_rows": 0,
+            }
+
         print(f"Processing {len(df)} products from chunk {chunk_id}")
         
         # Initialize results
         product_results = []
         seller_results = []
+        remaining_results = []
         
-        # Setup driver
-        driver = setup_driver()
+        # Setup driver with retry
+        driver = None
+        try:
+            driver = setup_driver(max_attempts=3, base_delay=5)
+        except Exception as e:
+            print(f"Driver setup failed for chunk {chunk_id}: {str(e)}")
+            traceback.print_exc()
+            if is_driver_connectivity_error(e):
+                remaining_path, remaining_rows = save_remaining_df(
+                    df, chunk_id, round_id, output_dir, reason="driver_setup_failed"
+                )
+                return {
+                    "success": True,
+                    "product_file": None,
+                    "seller_file": None,
+                    "remaining_file": remaining_path,
+                    "product_rows": 0,
+                    "seller_rows": 0,
+                    "remaining_rows": remaining_rows,
+                }
+            raise
         
-        # Process each product
-        for index, row in df.iterrows():
-            product_id = row['product_id']
-            web_id = row['web_id']
-            keyword = row['keyword']
-            url = row['url']
-            osb_url = row['osb_url']
-            
-            print(f"\nProcessing {index+1}/{len(df)}: Product ID {product_id}")
-            
-            # Scrape product
-            scraped_data = scrape_product(driver, product_id, keyword, url)
-            
-            # Add original fields back
-            scraped_data['web_id'] = web_id
-            scraped_data['osb_url'] = osb_url
-            
-            # Add to results
-            product_results.append(scraped_data)
-            seller_results.extend(scraped_data['competitors'])
-            
-            # Sleep between products
-            if index < len(df) - 1:
-                time.sleep(random.uniform(3, 6))
+        try:
+            # Process each product
+            for index, row in df.iterrows():
+                product_id = row['product_id']
+                web_id = row['web_id']
+                keyword = row['keyword']
+                url = row['url']
+                osb_url = row['osb_url']
+                name = row['name']
+                mpnsku = row['mpn_sku']
+                gtin = row['gtin']
+                brand = row['brand']
+                cat = row['category']
+                
+                print(f"\nProcessing {index+1}/{len(df)}: Product ID {product_id}")
+                
+                # Scrape product
+                try:
+                    scraped_data = scrape_product(driver, product_id, keyword, url, osb_url)
+                except Exception as e:
+                    print(f"Error scraping product {product_id}: {str(e)}")
+                    traceback.print_exc()
+                    scraped_data = None
+                    if is_driver_connectivity_error(e):
+                        try:
+                            if driver:
+                                driver.quit()
+                        except Exception:
+                            pass
+                        try:
+                            driver = setup_driver(max_attempts=3, base_delay=5)
+                            scraped_data = scrape_product(driver, product_id, keyword, url, osb_url)
+                        except Exception as e2:
+                            print(f"Retry after driver restart failed: {str(e2)}")
+                            traceback.print_exc()
+                            scraped_data = build_error_result(
+                                product_id, keyword, url,
+                                f"driver_error: {str(e2)[:160]}"
+                            )
+                    if scraped_data is None:
+                        scraped_data = build_error_result(
+                            product_id, keyword, url,
+                            f"scrape_error: {str(e)[:160]}"
+                        )
+                
+                # Add original fields back
+                scraped_data['web_id'] = web_id
+                scraped_data['keyword'] = keyword
+                scraped_data['osb_url'] = osb_url
+                scraped_data['name'] = name
+                scraped_data['mpn_sku'] = mpnsku
+                scraped_data['gtin'] = gtin
+                scraped_data['brand'] = brand
+                scraped_data['category'] = cat
+                
+                # Add to results
+                product_results.append(scraped_data)
+                seller_results.extend(scraped_data.get('competitors', []))
+                if str(scraped_data.get('status', '')).strip().lower() in {'captcha_failed', 'error'}:
+                    remaining_row = {
+                        col: ('' if pd.isna(row[col]) else row[col])
+                        for col in df.columns
+                    }
+                    remaining_results.append(remaining_row)
+                
+                # Sleep between products
+                if index < len(df) - 1:
+                    time.sleep(random.uniform(1,3))
+        finally:
+            try:
+                if driver:
+                    driver.quit()
+            except Exception:
+                pass
         
-        # Close driver
-        driver.quit()
-        
+        # Keep only non-remaining results in round outputs.
+        completed_product_results = [
+            r for r in product_results
+            if str(r.get('status', '')).strip().lower() not in {'captcha_failed', 'error'}
+        ]
+
         # Create CSV 1: Product Information
         csv1_data = []
-        for result in product_results:
+        for result in completed_product_results:
             csv1_row = {
-                'product_id': result.get('product_id'),
-                'web_id': result.get('web_id'),
-                'keyword': result.get('keyword'),
-                'url': result.get('url'),
-                'osb_url': result.get('osb_url'),
-                'last_response': result.get('last_response'),
-                'product_url': result.get('product_url', ''),   # ✅ FIX
+                'product_id': result.get('product_id', ''),
+                'web_id': result.get('web_id', ''),
+                'name' : result.get('name',''),
+                'mpn_sku' : result.get('mpn_sku',''),
+                'gtin' : result.get('gtin',''),
+                'brand' : result.get('brand',''),
+                'category': result.get('category', ''),
+                'keyword': result.get('keyword', ''),
+                'url': result.get('url', ''),
+                'osb_url': result.get('osb_url', ''),
+                'last_response': result.get('last_response', ''),
+                'osb_url_match' : result.get('osb_url_match', ''),
+                'product_url': result.get('product_url', ''),
                 'seller': result.get('seller', ''),
                 'product_name': result.get('product_name', ''),
                 'cid': result.get('cid', ''),
                 'pid': result.get('pid', ''),
-                'last_fetched_date': result.get('last_fetched_date'),
+                'last_fetched_date': result.get('last_fetched_date', ''),
                 'osb_position': result.get('osb_position', 0),
                 'osb_id': result.get('osb_id', ''),
                 'seller_count': result.get('seller_count', 0),
-                'status': result.get('status')
+                'status': result.get('status', 'error')
             }
+
             csv1_data.append(csv1_row)
         
         # Create CSV 2: Seller Information
         csv2_data = []
+        completed_product_ids = {str(r.get('product_id', '')).strip() for r in completed_product_results}
         for seller in seller_results:
+            if str(seller.get('product_id', '')).strip() not in completed_product_ids:
+                continue
             csv2_row = {
-                'product_id': seller.get('product_id'),
-                'seller': seller.get('seller',''),
-                'seller_product_name': seller.get('seller_product_name',''),
-                'seller_url': seller.get('seller_url',''),
-                'seller_price': seller.get('seller_price',0),
-                'last_fetched_date': seller.get('last_fetched_date','')
+                'product_id': seller.get('product_id', ''),
+                'seller': seller.get('seller', ''),
+                'seller_product_name': seller.get('seller_product_name', ''),
+                'seller_url': seller.get('seller_url', ''),
+                'seller_price': seller.get('seller_price', ''),
+                'last_fetched_date': seller.get('last_fetched_date', '')
             }
             csv2_data.append(csv2_row)
         
         # Save CSV files locally
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = 'output'
         os.makedirs(output_dir, exist_ok=True)
         
-        csv1_filename = f"product_info_chunk{chunk_id}_{timestamp}.csv"
-        csv2_filename = f"seller_info_chunk{chunk_id}_{timestamp}.csv"
+        csv1_filename = f"product_info_round{round_id}_chunk{chunk_id}_{timestamp}.csv"
+        csv2_filename = f"seller_info_round{round_id}_chunk{chunk_id}_{timestamp}.csv"
+        csv3_filename = f"gshopping_remaining_round{round_id}_chunk{chunk_id}_{timestamp}.csv"
         
         csv1_path = os.path.join(output_dir, csv1_filename)
         csv2_path = os.path.join(output_dir, csv2_filename)
+        csv3_path = os.path.join(output_dir, csv3_filename)
         
         if csv1_data:
-            pd.DataFrame(csv1_data).to_csv(csv1_path, index=False)
+            pd.DataFrame(csv1_data, columns=PRODUCT_FINAL_COLUMNS).to_csv(csv1_path, index=False)
             print(f"✓ Saved product info: {csv1_filename}")
         
         if csv2_data:
             pd.DataFrame(csv2_data).to_csv(csv2_path, index=False)
             print(f"✓ Saved seller info: {csv2_filename}")
+
+        if remaining_results:
+            pd.DataFrame(remaining_results).to_csv(csv3_path, index=False)
+            print(f"✓ Saved remaining rows: {csv3_filename}")
         
-        # Upload to FTP
-        if csv1_data:
-            upload_to_ftp(ftp_host, ftp_user, ftp_pass, ftp_path, csv1_path, csv1_filename)
+        # Upload to FTP STOPPED TO AVOID UNNECESSARY FTP USAGE DURING TESTING
+        # if csv1_data:
+        #     upload_to_ftp(ftp_host, ftp_user, ftp_pass, ftp_path, csv1_path, csv1_filename)
         
-        if csv2_data:
-            upload_to_ftp(ftp_host, ftp_user, ftp_pass, ftp_path, csv2_path, csv2_filename)
+        # if csv2_data:
+        #     upload_to_ftp(ftp_host, ftp_user, ftp_pass, ftp_path, csv2_path, csv2_filename)
         
         print(f"\n✓ Chunk {chunk_id} processing completed")
-        return True
+        return {
+            "success": True,
+            "product_file": csv1_path if csv1_data else None,
+            "seller_file": csv2_path if csv2_data else None,
+            "remaining_file": csv3_path if remaining_results else None,
+            "product_rows": len(csv1_data),
+            "seller_rows": len(csv2_data),
+            "remaining_rows": len(remaining_results),
+        }
         
     except Exception as e:
         print(f"Error processing chunk {chunk_id}: {str(e)}")
         traceback.print_exc()
-        return False
+        if df is not None and is_driver_connectivity_error(e):
+            remaining_path, remaining_rows = save_remaining_df(
+                df, chunk_id, round_id, output_dir, reason="driver_connectivity_error"
+            )
+            return {
+                "success": True,
+                "product_file": None,
+                "seller_file": None,
+                "remaining_file": remaining_path,
+                "product_rows": 0,
+                "seller_rows": 0,
+                "remaining_rows": remaining_rows,
+            }
+        return {
+            "success": False,
+            "product_file": None,
+            "seller_file": None,
+            "remaining_file": None,
+            "product_rows": 0,
+            "seller_rows": 0,
+            "remaining_rows": 0,
+        }
+
+
+def run_recursive_pipeline(input_csv, total_chunks, ftp_host, ftp_user, ftp_pass, ftp_path, max_rounds=10):
+    """Process chunks recursively until no remaining rows are left."""
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_root = os.path.join("output", f"recursive_run_{run_ts}")
+    rounds_root = os.path.join(run_root, "rounds")
+    os.makedirs(rounds_root, exist_ok=True)
+
+    all_product_files = []
+    all_seller_files = []
+    current_input = input_csv
+    round_id = 1
+
+    while round_id <= max_rounds:
+        print(f"\n{'=' * 60}")
+        print(f"Starting round {round_id}")
+        print(f"Input file: {current_input}")
+        print(f"{'=' * 60}")
+
+        try:
+            current_df = pd.read_csv(current_input)
+        except Exception as e:
+            print(f"Error reading round input file {current_input}: {e}")
+            return False
+
+        if current_df.empty:
+            print("No rows left to process. Ending recursion.")
+            break
+
+        round_dir = os.path.join(rounds_root, f"round_{round_id}")
+        os.makedirs(round_dir, exist_ok=True)
+
+        chunk_files = split_dataframe_to_chunk_files(
+            current_df,
+            output_dir=round_dir,
+            total_chunks=max(1, int(total_chunks)),
+            prefix=f"round_{round_id}",
+        )
+        if not chunk_files:
+            print("No chunks generated for current round. Ending recursion.")
+            break
+
+        round_product_files = []
+        round_seller_files = []
+        round_remaining_files = []
+        any_chunk_failed = False
+
+        for idx, chunk_file in enumerate(chunk_files, start=1):
+            chunk_result = process_chunk(
+                chunk_file=chunk_file,
+                chunk_id=idx,
+                total_chunks=len(chunk_files),
+                round_id=round_id,
+                output_dir=round_dir,
+            )
+            if not chunk_result.get("success"):
+                any_chunk_failed = True
+                continue
+
+            if chunk_result.get("product_file"):
+                round_product_files.append(chunk_result["product_file"])
+                all_product_files.append(chunk_result["product_file"])
+            if chunk_result.get("seller_file"):
+                round_seller_files.append(chunk_result["seller_file"])
+                all_seller_files.append(chunk_result["seller_file"])
+            if chunk_result.get("remaining_file"):
+                round_remaining_files.append(chunk_result["remaining_file"])
+
+        if any_chunk_failed:
+            print("One or more chunks failed in this round.")
+
+        round_product_merged, round_product_rows = merge_csv_files(
+            round_product_files,
+            os.path.join(round_dir, f"merged_products_round{round_id}.csv"),
+            sort_columns=["product_id"],
+            expected_columns=PRODUCT_FINAL_COLUMNS,
+        )
+        round_seller_merged, round_seller_rows = merge_csv_files(
+            round_seller_files,
+            os.path.join(round_dir, f"merged_sellers_round{round_id}.csv"),
+            sort_columns=["product_id", "seller"],
+        )
+        round_remaining_merged, round_remaining_rows = merge_csv_files(
+            round_remaining_files,
+            os.path.join(round_dir, f"gshopping_remaining_round{round_id}.csv"),
+            sort_columns=["product_id"],
+            expected_columns=PRODUCT_FINAL_COLUMNS,
+        )
+
+        # Upload round-level merged files only after the full round has finished.
+        if round_product_merged:
+            upload_to_ftp(
+                ftp_host, ftp_user, ftp_pass, ftp_path,
+                round_product_merged, os.path.basename(round_product_merged)
+            )
+        if round_seller_merged:
+            upload_to_ftp(
+                ftp_host, ftp_user, ftp_pass, ftp_path,
+                round_seller_merged, os.path.basename(round_seller_merged)
+            )
+        if round_remaining_merged:
+            upload_to_ftp(
+                ftp_host, ftp_user, ftp_pass, ftp_path,
+                round_remaining_merged, os.path.basename(round_remaining_merged)
+            )
+
+        print(
+            f"Round {round_id} summary: products={round_product_rows}, "
+            f"sellers={round_seller_rows}, remaining={round_remaining_rows}"
+        )
+
+        if not round_remaining_merged or round_remaining_rows == 0:
+            print("No remaining rows after this round. Recursive processing is complete.")
+            break
+
+        current_input = round_remaining_merged
+        round_id += 1
+
+    if round_id > max_rounds:
+        print(f"Reached max rounds limit ({max_rounds}). Stopping recursion.")
+
+    final_products_file, final_product_rows = merge_csv_files(
+        all_product_files,
+        os.path.join(run_root, f"merged_products_final_{run_ts}.csv"),
+        sort_columns=["product_id"],
+        expected_columns=PRODUCT_FINAL_COLUMNS,
+    )
+    final_sellers_file, final_seller_rows = merge_csv_files(
+        all_seller_files,
+        os.path.join(run_root, f"merged_sellers_final_{run_ts}.csv"),
+        sort_columns=["product_id", "seller"],
+    )
+
+    if final_products_file:
+        upload_to_ftp(
+            ftp_host, ftp_user, ftp_pass, ftp_path,
+            final_products_file, os.path.basename(final_products_file)
+        )
+    if final_sellers_file:
+        upload_to_ftp(
+            ftp_host, ftp_user, ftp_pass, ftp_path,
+            final_sellers_file, os.path.basename(final_sellers_file)
+        )
+
+    print("\nFinal merge summary:")
+    print(f"Final products: {final_product_rows} rows")
+    print(f"Final sellers:  {final_seller_rows} rows")
+    print(f"Output root:    {run_root}")
+
+    return bool(final_products_file or final_sellers_file)
 
 def main():
     parser = argparse.ArgumentParser(description='Google Shopping Scraper with Captcha Solving')
-    parser.add_argument('--chunk-id', type=int, required=True, help='Chunk ID (1-based)')
+    parser.add_argument('--chunk-id', type=int, default=1, help='Chunk ID (1-based)')
     parser.add_argument('--total-chunks', type=int, required=True, help='Total number of chunks')
     parser.add_argument('--input-file', type=str, required=True, help='Input CSV filename on FTP')
+    parser.add_argument('--recursive', action='store_true', help='Run recursive chunk processing until remaining is empty')
+    parser.add_argument('--max-rounds', type=int, default=10, help='Maximum recursive rounds')
     
     args = parser.parse_args()
     
@@ -845,9 +1199,10 @@ def main():
     print("Google Shopping Scraper with Captcha Solving")
     print(f"Chunk: {args.chunk_id} of {args.total_chunks}")
     print(f"Input file: {args.input_file}")
+    print(f"Recursive mode: {'Yes' if args.recursive else 'No'}")
     print("=" * 60)
     
-    # Get FTP credentials
+
     ftp_host = os.getenv('FTP_HOST')
     ftp_user = os.getenv('FTP_USER')
     ftp_pass = os.getenv('FTP_PASS')
@@ -864,21 +1219,33 @@ def main():
         print("Failed to download input CSV")
         sys.exit(1)
     
-    # Split CSV and get our chunk
-    chunk_file = split_csv(input_csv, 'chunks', args.chunk_id, args.total_chunks)
-    if not chunk_file:
-        print("Failed to split CSV")
-        sys.exit(1)
-    
-    # Process the chunk
-    success = process_chunk(chunk_file, args.chunk_id, args.total_chunks)
-    
-    # Clean up
+    if args.recursive:
+        success = run_recursive_pipeline(
+            input_csv=input_csv,
+            total_chunks=args.total_chunks,
+            ftp_host=ftp_host,
+            ftp_user=ftp_user,
+            ftp_pass=ftp_pass,
+            ftp_path=ftp_path,
+            max_rounds=max(1, args.max_rounds),
+        )
+    else:
+        chunk_file = split_csv(input_csv, 'chunks', args.chunk_id, args.total_chunks)
+        if not chunk_file:
+            print("Failed to split CSV")
+            sys.exit(1)
+        
+        chunk_result = process_chunk(chunk_file, args.chunk_id, args.total_chunks)
+        success = chunk_result.get("success", False)
+        
+        try:
+            os.remove(chunk_file)
+            shutil.rmtree('chunks', ignore_errors=True)
+        except:
+            pass
+
     try:
         os.remove(input_csv)
-        os.remove(chunk_file)
-        import shutil
-        shutil.rmtree('chunks', ignore_errors=True)
     except:
         pass
     

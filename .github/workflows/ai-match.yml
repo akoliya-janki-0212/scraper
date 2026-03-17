@@ -1,0 +1,121 @@
+name: AI Score All Products
+
+on:
+  workflow_dispatch:
+    inputs:
+      system_file:
+        description: "Path to system CSV in repo"
+        required: true
+        default: "system.csv"
+      competitor_file:
+        description: "Path to competitor CSV in repo"
+        required: true
+        default: "competitor.csv"
+      output_file:
+        description: "Output CSV file path"
+        required: true
+        default: "ai_match_output.csv"
+      model:
+        description: "Model for AI scoring"
+        required: true
+        default: "deepseek-ai/deepseek-v3.1-terminus"
+      force_rescore:
+        description: "Ignore cache and rescore every row"
+        required: true
+        type: boolean
+        default: false
+
+concurrency:
+  group: ai-score-all-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  score-all-products:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests
+
+      - name: Restore AI score cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ai_score_cache.sqlite3
+          key: ai-score-cache-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ai-score-cache-${{ github.ref_name }}-
+
+      - name: Validate inputs
+        run: |
+          SYSTEM_FILE="${{ github.event.inputs.system_file }}"
+          COMPETITOR_FILE="${{ github.event.inputs.competitor_file }}"
+
+          if [ ! -f "$SYSTEM_FILE" ]; then
+            echo "Missing system file: $SYSTEM_FILE"
+            exit 1
+          fi
+          if [ ! -f "$COMPETITOR_FILE" ]; then
+            echo "Missing competitor file: $COMPETITOR_FILE"
+            exit 1
+          fi
+
+      - name: Run AI scoring for all products
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          if [ -z "$NVIDIA_API_KEY" ]; then
+            echo "NVIDIA_API_KEY secret is required"
+            exit 1
+          fi
+
+          FORCE_FLAG=""
+          if [ "${{ github.event.inputs.force_rescore }}" = "true" ]; then
+            FORCE_FLAG="--force"
+          fi
+
+          python ai_score.py \
+            "${{ github.event.inputs.system_file }}" \
+            "${{ github.event.inputs.competitor_file }}" \
+            "${{ github.event.inputs.output_file }}" \
+            --model "${{ github.event.inputs.model }}" \
+            $FORCE_FLAG
+
+      - name: Save AI score cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ai_score_cache.sqlite3
+          key: ai-score-cache-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload score artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-score-results-${{ github.run_number }}
+          path: |
+            ${{ github.event.inputs.output_file }}
+            ai_score_cache.sqlite3
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Job summary
+        if: always()
+        run: |
+          echo "## AI Score All Products" >> "$GITHUB_STEP_SUMMARY"
+          echo "- System CSV: \`${{ github.event.inputs.system_file }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Competitor CSV: \`${{ github.event.inputs.competitor_file }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Output CSV: \`${{ github.event.inputs.output_file }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Model: \`${{ github.event.inputs.model }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Force rescore: \`${{ github.event.inputs.force_rescore }}\`" >> "$GITHUB_STEP_SUMMARY"

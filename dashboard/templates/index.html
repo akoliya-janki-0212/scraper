@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scraper Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="header-content">
+            <div class="header-left">
+                <div class="logo">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                        <rect width="32" height="32" rx="8" fill="url(#grad)"/>
+                        <path d="M10 16L14 20L22 12" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                        <defs><linearGradient id="grad" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#667eea"/><stop offset="1" stop-color="#764ba2"/></linearGradient></defs>
+                    </svg>
+                </div>
+                <div>
+                    <h1>Scraper Dashboard</h1>
+                    <p class="subtitle">Manage all your scraping workflows</p>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="stats-pill" id="stats-pill">
+                    <span class="stats-count" id="stats-total">0</span> workflows
+                    <span class="stats-sep">·</span>
+                    <span class="stats-running" id="stats-running">0</span> running
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Filter bar -->
+    <div class="filter-bar">
+        <div class="filter-bar-inner">
+            <button class="filter-btn active" data-filter="all">All</button>
+        </div>
+    </div>
+
+    <!-- Workflow grid -->
+    <main class="container">
+        <div class="workflow-grid" id="workflow-grid">
+            <!-- Cards injected by JS -->
+        </div>
+    </main>
+
+    <script>
+        const API = '';
+        let workflows = [];
+        let activeFilter = 'all';
+
+        // ---- Render ----
+        function renderCards(data) {
+            const grid = document.getElementById('workflow-grid');
+            const fragment = document.createDocumentFragment();
+
+            data.forEach(wf => {
+                if (activeFilter !== 'all' && wf.category !== activeFilter) return;
+
+                let card = document.getElementById(`card-${wf.key}`);
+                const isNew = !card;
+
+                if (isNew) {
+                    card = document.createElement('div');
+                    card.className = 'card';
+                    card.id = `card-${wf.key}`;
+                }
+
+                const statusClass = wf.state || 'idle';
+                const isRunning = statusClass === 'running';
+                const statusLabel = statusClass.charAt(0).toUpperCase() + statusClass.slice(1);
+
+                card.className = `card card--${statusClass}`;
+                card.style.setProperty('--accent', wf.color);
+
+                card.innerHTML = `
+                    <div class="card-header">
+                        <div class="card-title-row">
+                            <span class="status-dot status-dot--${statusClass}"></span>
+                            <h3 class="card-title">${wf.name}</h3>
+                            <span class="badge badge--${wf.category.toLowerCase()}">${wf.category}</span>
+                        </div>
+                        <p class="card-desc">${wf.description}</p>
+                        <p class="card-script"><code>${wf.script}</code></p>
+                    </div>
+
+                    <div class="card-config" id="config-${wf.key}">
+                        <button class="config-toggle" onclick="toggleConfig('${wf.key}')">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z" /></svg>
+                            Config
+                        </button>
+                        <div class="config-panel" id="panel-${wf.key}" style="display:none;">
+                            <p class="config-hint">${wf.config_hint}</p>
+                            ${renderEnvInputs(wf)}
+                        </div>
+                    </div>
+
+                    <div class="card-actions">
+                        ${isRunning
+                            ? `<button class="btn btn--stop" onclick="stopWorkflow('${wf.key}')">
+                                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+                                   Stop
+                               </button>`
+                            : `<button class="btn btn--start" onclick="startWorkflow('${wf.key}')">
+                                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+                                   Start
+                               </button>`
+                        }
+                        <span class="status-label status-label--${statusClass}">${statusLabel}</span>
+                    </div>
+
+                    ${(wf.logs && wf.logs.length > 0) ? `
+                    <div class="card-logs">
+                        <div class="logs-header">
+                            <span>Output</span>
+                            <button class="logs-clear" onclick="clearLogs('${wf.key}')">Clear</button>
+                        </div>
+                        <pre class="logs-pre" id="logs-${wf.key}">${escapeHtml(wf.logs.join('\n'))}</pre>
+                    </div>` : ''}
+                `;
+
+                if (isNew) fragment.appendChild(card);
+            });
+
+            // Append new cards only
+            if (fragment.childNodes.length > 0) grid.appendChild(fragment);
+
+            // Auto-scroll log areas
+            document.querySelectorAll('.logs-pre').forEach(el => {
+                el.scrollTop = el.scrollHeight;
+            });
+        }
+
+        function renderEnvInputs(wf) {
+            const env = wf.default_env || {};
+            const keys = Object.keys(env);
+            if (keys.length === 0) return '<p class="config-hint" style="opacity:.5">No configurable env vars</p>';
+
+            return keys.map(k => `
+                <div class="env-row">
+                    <label class="env-label">${k}</label>
+                    <input class="env-input" id="env-${wf.key}-${k}" value="${env[k]}" placeholder="${k}" />
+                </div>
+            `).join('');
+        }
+
+        function getEnvOverrides(key) {
+            const wf = workflows.find(w => w.key === key);
+            if (!wf || !wf.default_env) return {};
+            const overrides = {};
+            for (const k of Object.keys(wf.default_env)) {
+                const input = document.getElementById(`env-${key}-${k}`);
+                if (input && input.value !== '') {
+                    overrides[k] = input.value;
+                }
+            }
+            return overrides;
+        }
+
+        function escapeHtml(str) {
+            const div = document.createElement('div');
+            div.textContent = str;
+            return div.innerHTML;
+        }
+
+        // ---- Actions ----
+        async function startWorkflow(key) {
+            const env = getEnvOverrides(key);
+            await fetch(`${API}/api/workflows/${key}/start`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({env})
+            });
+            pollNow();
+        }
+
+        async function stopWorkflow(key) {
+            await fetch(`${API}/api/workflows/${key}/stop`, {method: 'POST'});
+            pollNow();
+        }
+
+        function toggleConfig(key) {
+            const panel = document.getElementById(`panel-${key}`);
+            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function clearLogs(key) {
+            const el = document.getElementById(`logs-${key}`);
+            if (el) el.textContent = '';
+        }
+
+        // ---- Filters ----
+        function buildFilters(data) {
+            const cats = [...new Set(data.map(w => w.category))].sort();
+            const bar = document.querySelector('.filter-bar-inner');
+            bar.innerHTML = `<button class="filter-btn ${activeFilter === 'all' ? 'active' : ''}" data-filter="all" onclick="setFilter('all')">All</button>`;
+            cats.forEach(cat => {
+                bar.innerHTML += `<button class="filter-btn ${activeFilter === cat ? 'active' : ''}" data-filter="${cat}" onclick="setFilter('${cat}')">${cat}</button>`;
+            });
+        }
+
+        function setFilter(f) {
+            activeFilter = f;
+            document.querySelectorAll('.filter-btn').forEach(b => {
+                b.classList.toggle('active', b.dataset.filter === f);
+            });
+            // Clear grid and re-render
+            document.getElementById('workflow-grid').innerHTML = '';
+            renderCards(workflows);
+        }
+
+        // ---- Polling ----
+        async function pollNow() {
+            try {
+                const res = await fetch(`${API}/api/workflows`);
+                workflows = await res.json();
+                renderCards(workflows);
+                updateStats(workflows);
+                buildFilters(workflows);
+            } catch (e) {
+                console.error('Poll error', e);
+            }
+        }
+
+        function updateStats(data) {
+            document.getElementById('stats-total').textContent = data.length;
+            document.getElementById('stats-running').textContent = data.filter(w => w.state === 'running').length;
+        }
+
+        // Initial load + 3s polling
+        pollNow();
+        setInterval(pollNow, 3000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,254 @@
+name: BBB SKU Extract from OVS Variants
+
+on:
+  workflow_dispatch:
+    inputs:
+      input_filename:
+        description: "Input CSV filename on FTP"
+        required: true
+        default: "overstock_data.csv"
+        type: string
+      total_chunks:
+        description: "Number of chunks to split into"
+        required: true
+        default: "4"
+        type: string
+      api_url:
+        description: "BBB API URL endpoint"
+        required: true
+        default: "https://api.bedbathandbeyond.com/options"
+        type: string
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        run: |
+          TOTAL_CHUNKS=${{ github.event.inputs.total_chunks || 4 }}
+
+          MATRIX="["
+          for ((i=1;i<=TOTAL_CHUNKS;i++)); do
+            MATRIX+="{\"chunk_id\":$i},"
+          done
+          MATRIX="${MATRIX%,}]"
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $MATRIX"
+
+  extract:
+    needs: plan
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+      - name: Download input file from FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_PORT: ${{ secrets.FTP_PORT }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_PATH: ${{ secrets.FTP_PATH }}
+        run: |
+          INPUT_FILE="${{ github.event.inputs.input_filename || 'overstock_data.csv' }}"
+          
+          cat >/tmp/download.lftp <<EOF
+          set ftp:ssl-allow no
+          open $FTP_HOST
+          user $FTP_USER $FTP_PASS
+          cd $FTP_PATH
+          get "$INPUT_FILE"
+          bye
+          EOF
+
+          lftp -f /tmp/download.lftp
+          ls -la "$INPUT_FILE"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install \
+            pandas==2.1.4 \
+            requests==2.31.0 \
+            aiohttp==3.9.1 \
+            aiofiles==23.2.1 \
+            asyncio-throttle==1.0.2 \
+            fake-useragent==1.4.0 \
+            tenacity==8.2.3 \
+            retrying==1.3.4
+
+      - name: Run BBB SKU Extractor
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_PORT: ${{ secrets.FTP_PORT }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_PATH: ${{ secrets.FTP_PATH }}
+        run: |
+          INPUT_FILE="${{ github.event.inputs.input_filename || 'ovs_variants.csv' }}"
+          TOTAL_CHUNKS="${{ github.event.inputs.total_chunks || 4 }}"
+          API_URL="${{ github.event.inputs.api_url || 'https://api.bedbathandbeyond.com/options' }}"
+          MAX_WORKERS="${{ github.event.inputs.max_workers || 1 }}"
+          REQUEST_DELAY="${{ github.event.inputs.request_delay || 5.0 }}"
+          TIMEOUT="${{ github.event.inputs.timeout || 45 }}"
+      
+          python ovs-bbb/bbb.py \
+            --chunk-id ${{ matrix.chunk_id }} \
+            --total-chunks $TOTAL_CHUNKS \
+            --input-file "$INPUT_FILE" \
+            --api-url "$API_URL" \
+            --max-workers $MAX_WORKERS \
+            --request-delay $REQUEST_DELAY \
+            --timeout $TIMEOUT
+
+      - name: Upload chunk results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbb-chunk-${{ matrix.chunk_id }}
+          path: output/
+          retention-days: 1
+
+  merge:
+    needs: extract
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install pandas
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas==2.1.4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: bbb_chunks
+
+      - name: Merge CSV files
+        run: |
+          cat > merge_bbb_results.py <<EOF
+          import os
+          import pandas as pd
+          from datetime import datetime
+          import glob
+
+          csv_files = []
+          for root, _, files in os.walk("bbb_chunks"):
+              for f in files:
+                  if f.endswith(".csv") and f.startswith("bbb_output_chunk"):
+                      csv_files.append(os.path.join(root, f))
+
+          if not csv_files:
+              print("No chunk files found!")
+              exit(1)
+
+          # Merge all chunks
+          dfs = []
+          for f in csv_files:
+              try:
+                  df = pd.read_csv(f)
+                  dfs.append(df)
+                  print(f"Loaded {f} with {len(df)} rows")
+              except Exception as e:
+                  print(f"Error loading {f}: {e}")
+
+          if dfs:
+              combined_df = pd.concat(dfs, ignore_index=True)
+              
+              # Sort by original order if available
+              if 'Ref Product ID' in combined_df.columns:
+                  combined_df.sort_values(['Ref Product ID', 'Ref Varient ID'], inplace=True)
+              
+              # Generate timestamp
+              ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+              output_filename = f"bbb_combined_products_{ts}.csv"
+              
+              combined_df.to_csv(output_filename, index=False)
+              print(f"Merged CSV saved as: {output_filename}")
+              print(f"Total rows: {len(combined_df)}")
+              print(f"Columns: {', '.join(combined_df.columns)}")
+          EOF
+
+          python merge_bbb_results.py
+
+      - name: Upload merged file to FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_PATH: ${{ secrets.FTP_PATH }}
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+          upload () {
+            FILE="$1"
+            echo "Uploading $FILE to FTP"
+
+            cat >/tmp/upload_bbb.lftp <<EOF
+          set ftp:ssl-allow no
+          open $FTP_HOST
+          user $FTP_USER $FTP_PASS
+          mkdir -p $FTP_PATH
+          cd $FTP_PATH
+          put "$FILE"
+          bye
+          EOF
+
+                      lftp -f /tmp/upload_bbb.lftp
+                      rm -f /tmp/upload_bbb.lftp
+                      echo "Upload completed: $FILE"
+                    }
+
+                    # Find the latest merged file
+                    LATEST_FILE=$(ls -t bbb_combined_products_*.csv | head -1)
+                    
+                    if [ -f "$LATEST_FILE" ]; then
+                      upload "$LATEST_FILE"
+                    else
+                      echo "No merged file found!"
+                      exit 1
+                    fi
+
+      - name: Upload merged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bbb-merged-results
+          path: bbb_combined_products_*.csv
+          retention-days: 7
+
+  notify:
+    needs: merge
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "BBB SKU Extraction Workflow finished"
+          echo "Results uploaded to FTP path: ${{ secrets.FTP_PATH }}"
+          echo "Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

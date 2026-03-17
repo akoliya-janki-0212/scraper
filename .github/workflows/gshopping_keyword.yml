@@ -1,0 +1,243 @@
+name: Google Shopping Keyword Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      keyword:
+        description: "Keyword to search in Google Shopping"
+        required: true
+        default: "ashley sectionals"
+        type: string
+      total_chunks:
+        description: "Number of chunks to split into (0 = process all in one run)"
+        required: true
+        default: "0"
+        type: string
+      max_products:
+        description: "Maximum products to fetch (0 = no limit)"
+        required: true
+        default: "0"
+        type: string
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        run: |
+          TOTAL_CHUNKS=${{ github.event.inputs.total_chunks || 0 }}
+
+          if [ "$TOTAL_CHUNKS" -le 0 ]; then
+            MATRIX='[{"chunk_id":1}]'
+          else
+            MATRIX="["
+            for ((i=1;i<=TOTAL_CHUNKS;i++)); do
+              MATRIX+="{\"chunk_id\":$i},"
+            done
+            MATRIX="${MATRIX%,}]"
+          fi
+
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Matrix: $MATRIX"
+
+  scrape:
+    needs: plan
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install Chrome and dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget \
+            gnupg \
+            ca-certificates \
+            unzip \
+            xvfb \
+            libxss1 \
+            libappindicator3-1 \
+            libindicator7 \
+            libnss3 \
+            libnspr4 \
+            libatk-bridge2.0-0 \
+            libgtk-3-0 \
+            libx11-xcb1 \
+            libxcomposite1 \
+            libxrandr2 \
+            libgbm1 \
+            libasound2 \
+            fonts-liberation \
+            libu2f-udev
+
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+
+          google-chrome-stable --version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install \
+            selenium==4.18.1 \
+            undetected-chromedriver==3.5.5 \
+            webdriver-manager \
+            pandas==2.1.4 \
+            beautifulsoup4==4.12.2 \
+            requests==2.31.0 \
+            lxml==4.9.3 \
+            fake-useragent==1.4.0 \
+            python-dateutil==2.8.2 \
+            speechrecognition==3.10.1 \
+            pydub==0.25.1 \
+            chromedriver-autoinstaller==0.6.4
+
+      - name: Run scraper
+        env:
+          DISPLAY: :99
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_PORT: ${{ secrets.FTP_PORT }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_PATH: ${{ secrets.FTP_PATH }}
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 &
+          sleep 3
+
+          KEYWORD="${{ github.event.inputs.keyword }}"
+          TOTAL_CHUNKS="${{ github.event.inputs.total_chunks || 0 }}"
+          MAX_PRODUCTS="${{ github.event.inputs.max_products || 0 }}"
+
+          python -u gshopping/gscrapper_keyword_ci.py \
+            --chunk-id ${{ matrix.chunk_id }} \
+            --total-chunks $TOTAL_CHUNKS \
+            --max-products $MAX_PRODUCTS \
+            --keyword "$KEYWORD"
+
+      - name: Upload chunk results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.chunk_id }}
+          path: output/
+          retention-days: 1
+
+  merge:
+    needs: scrape
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install pandas
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas==2.1.4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: chunks
+
+      - name: Merge CSV files
+        run: |
+            cat > merge_results.py <<EOF
+            import os
+            import pandas as pd
+            from datetime import datetime
+
+            product_files = []
+            seller_files = []
+
+            for root, _, files in os.walk("chunks"):
+                for f in files:
+                    path = os.path.join(root, f)
+                    if f.endswith(".csv") and "product" in f:
+                        product_files.append(path)
+                    elif f.endswith(".csv") and "seller" in f:
+                        seller_files.append(path)
+
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            if product_files:
+                df = pd.concat((pd.read_csv(f) for f in product_files), ignore_index=True)
+                df.to_csv(f"merged_products_{ts}.csv", index=False)
+
+            if seller_files:
+                df = pd.concat((pd.read_csv(f) for f in seller_files), ignore_index=True)
+                df.to_csv(f"merged_sellers_{ts}.csv", index=False)
+            EOF
+
+                python merge_results.py
+
+      - name: Upload merged files to FTP
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASS: ${{ secrets.FTP_PASS }}
+          FTP_PATH: ${{ secrets.FTP_PATH }}
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y lftp
+
+          upload () {
+            FILE="$1"
+            echo "Uploading $FILE"
+
+            cat >/tmp/upload.lftp <<EOF
+          set ftp:ssl-allow no
+          open $FTP_HOST
+          user $FTP_USER $FTP_PASS
+          mkdir -p $FTP_PATH
+          cd $FTP_PATH
+          put $FILE
+          bye
+          EOF
+
+                      lftp -f /tmp/upload.lftp
+                      rm -f /tmp/upload.lftp
+                    }
+
+                    shopt -s nullglob
+
+                    for f in merged_products_*.csv; do upload "$f"; done
+                    for f in merged_sellers_*.csv; do upload "$f"; done
+
+      - name: Upload merged artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: merged-results
+          path: |
+            merged_products_*.csv
+            merged_sellers_*.csv
+          retention-days: 7
+
+  notify:
+    needs: merge
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Summary
+        run: |
+          echo "Workflow finished"
+          echo "Run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
