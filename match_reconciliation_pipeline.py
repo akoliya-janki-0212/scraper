@@ -21,9 +21,74 @@ import zipfile
 import os
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+# Matching controls inspired by legacy PHP validation logic
+STOP_WORDS: set[str] = {
+    "by",
+    "in",
+    "the",
+    "and",
+    "collection",
+    "is",
+    "set",
+    "of",
+    "furniture",
+    "home",
+    "with",
+    "small",
+    "products",
+    "product",
+    "htm",
+    "html",
+}
+
+EXCLUDE_CATEGORIES: set[str] = {
+    "Dining Sets",
+    "Home Bar Sets",
+    "Bedroom Sets",
+    "Living Room Sets",
+    "Coffee Table Sets",
+    "Home Office Sets",
+    "Game Table Sets",
+    "Bedding and Comforter Sets",
+    "Outdoor Conversation Sets",
+}
+
+SYNONYMS: dict[str, list[str]] = {
+    "gray": ["grey"],
+    "grey": ["gray", "greystone"],
+    "washedgray": ["washedgrey"],
+    "greystone": ["grey"],
+    "darkbrown": ["slate"],
+    "slate": ["darkbrown"],
+    "lightbrown": ["sand"],
+    "sand": ["lightbrown"],
+    "darkgray": ["darkgrey", "stormgray"],
+    "darkgrey": ["darkgray"],
+    "stormgray": ["darkgray"],
+    "wardrobe": ["storage", "unit", "storageunit"],
+    "storage": ["wardrobe"],
+    "phillipe": ["philippe"],
+    "philippe": ["phillipe"],
+    "unit": ["wardrobe"],
+    "californiaking": ["calking", "cking"],
+    "calking": ["californiaking"],
+    "cking": ["californiaking"],
+    "philips": ["ps"],
+    "caribbean": ["carribean"],
+    "carribean": ["caribbean"],
+    "blacksilver": ["black", "silver"],
+}
+
+EXCLUDE_SYNONYMS: dict[str, list[str]] = {
+    "king": ["calking", "californiaking", "cking"],
+}
+
+BED_PART_TOKENS: set[str] = {"headboard", "footboard", "rails"}
 
 
 def clean_text(value: Any) -> str:
@@ -134,6 +199,175 @@ def token_set(value: Any) -> set[str]:
     return {t for t in re.findall(r"[a-z0-9]+", clean_text(value).lower()) if t}
 
 
+@lru_cache(maxsize=50000)
+def normalize_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", clean_text(value).lower())
+
+
+@lru_cache(maxsize=50000)
+def tokenize_text(value: str) -> tuple[str, ...]:
+    tokens = [t for t in re.findall(r"[a-z0-9]+", clean_text(value).lower()) if t]
+    filtered: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in STOP_WORDS:
+            continue
+        if token not in seen:
+            seen.add(token)
+            filtered.append(token)
+    return tuple(filtered)
+
+
+@lru_cache(maxsize=20000)
+def token_variants(token: str) -> tuple[str, ...]:
+    base = normalize_text(token)
+    if not base:
+        return tuple()
+    variants: set[str] = {base}
+    variants.add(base + "s")
+    variants.add(base + "es")
+    variants.add(base.rstrip("s"))
+    for syn in SYNONYMS.get(base, []):
+        syn_norm = normalize_text(syn)
+        if syn_norm:
+            variants.add(syn_norm)
+            variants.add(syn_norm + "s")
+            variants.add(syn_norm.rstrip("s"))
+    return tuple(v for v in variants if v)
+
+
+def levenshtein_with_cutoff(left: str, right: str, max_dist: int) -> int:
+    if left == right:
+        return 0
+    if abs(len(left) - len(right)) > max_dist:
+        return max_dist + 1
+    # Ensure left is the shorter string
+    if len(left) > len(right):
+        left, right = right, left
+    previous = list(range(len(left) + 1))
+    for i, rc in enumerate(right, start=1):
+        current = [i]
+        min_row = i
+        for j, lc in enumerate(left, start=1):
+            insertions = previous[j] + 1
+            deletions = current[j - 1] + 1
+            substitutions = previous[j - 1] + (lc != rc)
+            val = min(insertions, deletions, substitutions)
+            current.append(val)
+            if val < min_row:
+                min_row = val
+        if min_row > max_dist:
+            return max_dist + 1
+        previous = current
+    return previous[-1]
+
+
+def fuzzy_token_match(token: str, haystack: list[str]) -> bool:
+    if not token or not haystack:
+        return False
+    variants = token_variants(token)
+    if not variants:
+        return False
+    needle = normalize_text(token)
+    needle_len = len(needle)
+    for candidate in haystack:
+        cand_norm = normalize_text(candidate)
+        if not cand_norm:
+            continue
+        if cand_norm in variants:
+            return True
+        if needle_len > 3 and abs(len(cand_norm) - needle_len) <= 2:
+            for variant in variants:
+                max_dist = int(max(1, len(variant) * 0.2))
+                if levenshtein_with_cutoff(variant, cand_norm, max_dist) <= max_dist:
+                    return True
+    return False
+
+
+def extract_url_tokens(url: str, include_query: bool = True) -> tuple[list[str], list[str]]:
+    raw = clean_text(url).lower()
+    if not raw:
+        return [], []
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        parsed = None
+    path = parsed.path if parsed else raw
+    query = parsed.query if (parsed and include_query) else ""
+    text = f"{path} {query}".strip() if query else path
+    text = re.sub(r"\.(html?|php|aspx?)$", "", text)
+    tokens = [t for t in re.findall(r"[a-z0-9]+", text) if t]
+
+    name_tokens: list[str] = []
+    id_tokens: list[str] = []
+    seen_name: set[str] = set()
+    seen_id: set[str] = set()
+    for token in tokens:
+        if token not in seen_id:
+            seen_id.add(token)
+            id_tokens.append(token)
+        if token in STOP_WORDS:
+            continue
+        if len(token) <= 1:
+            continue
+        if len(token) >= 6 and any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
+            # Likely SKU/MPN-like; skip for name matching
+            continue
+        if token not in seen_name:
+            seen_name.add(token)
+            name_tokens.append(token)
+    return name_tokens, id_tokens
+
+
+def extract_osb_tokens(osb_url: str, brand_label: str, collection: str) -> list[str]:
+    raw = clean_text(osb_url).lower()
+    if not raw:
+        return []
+    try:
+        parsed = urlparse(raw)
+        path = parsed.path or ""
+    except ValueError:
+        path = raw
+    path = path.strip("/")
+    if not path:
+        return []
+    tokens = [t for t in re.findall(r"[a-z0-9]+", path) if t]
+    brand_tokens = [t for t in re.findall(r"[a-z0-9]+", clean_text(brand_label).lower()) if t]
+    collection_clean = clean_text(collection).lower().replace("collection", "")
+    collection_tokens = [t for t in re.findall(r"[a-z0-9]+", collection_clean) if t]
+    filtered = [t for t in tokens if t not in brand_tokens and t not in collection_tokens]
+    return filtered
+
+
+def url_has_set_token(text: str) -> bool:
+    if not text:
+        return False
+    return re.search(r"(^|[^a-z0-9])set(?!-of)([^a-z0-9]|$)", text.lower()) is not None
+
+
+def name_url_match_percent(name_tokens: list[str], url_tokens: list[str]) -> tuple[float, set[str]]:
+    if not name_tokens or not url_tokens:
+        return 0.0, set()
+    matched = 0
+    matched_tokens: set[str] = set()
+    for token in name_tokens:
+        if fuzzy_token_match(token, url_tokens):
+            matched += 1
+            matched_tokens.add(token)
+    return matched / max(1, len(name_tokens)) * 100.0, matched_tokens
+
+
+def is_set_from_text(tokens: list[str], raw_text: str) -> bool:
+    if "set" in tokens or "sets" in tokens:
+        return True
+    match = re.search(r"\b(\d+)\s*piece", clean_text(raw_text), re.IGNORECASE)
+    if match:
+        try:
+            return int(match.group(1)) > 1
+        except ValueError:
+            return False
+    return False
+
 def name_similarity(left: str, right: str) -> float:
     a = token_set(left)
     b = token_set(right)
@@ -236,6 +470,28 @@ def mpn_family_key(token: str) -> str:
         return ""
     prefix = suffix[:2]
     return f"{num}|{prefix}"
+
+
+def merge_mpn(value: str) -> str:
+    parts = [clean_text(p).lower() for p in clean_text(value).split(";") if clean_text(p)]
+    if len(parts) < 2:
+        return clean_text(value).lower()
+    parts.sort()
+    first = parts[0]
+    prefix = first.split("-", 1)[0]
+    merged = first
+    for part in parts[1:]:
+        if part.startswith(prefix + "-"):
+            part = part[len(prefix) + 1 :]
+        merged = f"{merged}-{part}"
+    return merged
+
+
+def is_strong_id_token(token: str) -> bool:
+    token = normalize_text(token)
+    if len(token) < 5:
+        return False
+    return any(c.isdigit() for c in token)
 
 
 def partial_token_match(left: str, right: str) -> bool:
@@ -396,6 +652,8 @@ class ReconciliationPipeline:
         }
         self.scrape_domain: str = ""
 
+        self.brand_id_token_map: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+
         self.cm_by_product: dict[str, dict[str, Any]] = {}
         self.cm_competitor_id: str = ""
         self.cm_repricer_id: str = ""
@@ -499,19 +757,31 @@ class ReconciliationPipeline:
                 mpn_tokens = id_tokens(row.get("mpn"))
                 sku_tokens = id_tokens(row.get("sku"))
                 part_tokens = id_tokens(row.get("part_number"))
+                mpn_merged = merge_mpn(row.get("mpn", ""))
+                mpn_merged_token = norm_id(mpn_merged)
+                if mpn_merged_token and mpn_merged_token not in mpn_tokens:
+                    mpn_tokens.append(mpn_merged_token)
                 id_union = list(dict.fromkeys(mpn_tokens + sku_tokens + part_tokens))
                 search_id_tokens = list(dict.fromkeys((mpn_tokens + sku_tokens) if (mpn_tokens or sku_tokens) else part_tokens))
                 gtin_values = numeric_tokens(row.get("gtin"))
                 osb_url = clean_text(row.get("osb_url"))
+                product_name = clean_text(row.get("product_name"))
+                collection = clean_text(row.get("collection"))
+                name_tokens = list(tokenize_text(product_name))
+                osb_tokens = extract_osb_tokens(osb_url, row.get("brand_label", ""), collection)
+                _, osb_id_tokens = extract_url_tokens(osb_url, include_query=False)
                 sys_row = {
                     "product_id": product_id,
-                    "product_name": clean_text(row.get("product_name")),
+                    "product_name": product_name,
                     "sku": clean_text(row.get("sku")),
+                    "90 days Sales": clean_text(row.get("90 days Sales")),
                     "web_id": clean_text(row.get("web_id")),
                     "gtin": clean_text(row.get("gtin")),
                     "mpn": clean_text(row.get("mpn")),
                     "brand_label": clean_text(row.get("brand_label")),
+                    "collection": collection,
                     "cat": clean_text(row.get("cat")),
+                    "type": clean_text(row.get("type")),
                     "part_number": clean_text(row.get("part_number")),
                     "osb_url": osb_url,
                     "system_status": clean_text(row.get("status") or row.get("data_status")),
@@ -533,10 +803,20 @@ class ReconciliationPipeline:
                     "_gtin_set": set(gtin_values),
                     "_gtin_is_unique": False,
                     "_category_tokens": token_set(row.get("cat")),
+                    "_name_tokens": name_tokens,
+                    "_is_set": is_set_from_text(name_tokens, product_name),
+                    "_osb_tokens": osb_tokens,
+                    "_osb_id_tokens": osb_id_tokens,
                 }
                 self.system[product_id] = sys_row
                 for token in gtin_values:
                     self.system_gtin_token_counts[token] += 1
+
+                brand_key = sys_row.get("_brand", "")
+                if brand_key:
+                    for token in id_union:
+                        if is_strong_id_token(token):
+                            self.brand_id_token_map[brand_key][token].add(product_id)
 
         for sys_row in self.system.values():
             gtin_tokens = sys_row.get("_gtin_tokens", [])
@@ -572,6 +852,12 @@ class ReconciliationPipeline:
                 url = clean.get("Ref Product URL", "")
                 # Derive handle from URL slug instead of CSV column
                 derived_handle = url_slug(url)
+                url_tokens, url_id_tokens = extract_url_tokens(url)
+                url_tokens_path, url_id_tokens_path = extract_url_tokens(url, include_query=False)
+                try:
+                    url_path = (urlparse(url).path or "").lower()
+                except ValueError:
+                    url_path = ""
                 # Prefer Ref MPN, fallback to Item Number (spec extraction), then Ref SKU
                 ref_mpn = (
                     clean.get("Ref MPN", "")
@@ -581,6 +867,7 @@ class ReconciliationPipeline:
                 ref_gtin = clean.get("Ref GTIN", "")
                 brand_label = clean.get(self.scrape_brand_col, "")
                 ref_category = clean.get("Ref Category", "")
+                ref_name = clean.get("Ref Product Name", "")
                 mpn_tokens = id_tokens(ref_mpn)
                 gtin_values = numeric_tokens(ref_gtin)
 
@@ -589,11 +876,18 @@ class ReconciliationPipeline:
                     "_url_fp": url_fingerprint(url),
                     "_path_key": path_key(url),
                     "_handle": norm_id(derived_handle),
+                    "_url_tokens": url_tokens,
+                    "_url_id_tokens": url_id_tokens,
+                    "_url_tokens_path": url_tokens_path,
+                    "_url_id_tokens_path": url_id_tokens_path,
+                    "_url_has_set": url_has_set_token(url_path),
+                    "_url_contains_with": any(t in {"with", "w", "bench"} for t in url_tokens),
                     "_mpn": norm_id(ref_mpn),  # legacy single-value key
                     "_gtin": norm_numeric_id(ref_gtin),  # legacy single-value key
                     "_brand": norm_brand(brand_label),
                     "_category_raw": ref_category,
                     "_category_tokens": token_set(ref_category),
+                    "_name_tokens": list(tokenize_text(ref_name)),
                     "_mpn_tokens": mpn_tokens,
                     "_mpn_token_set": set(mpn_tokens),
                     "_gtin_tokens": gtin_values,
@@ -675,6 +969,8 @@ class ReconciliationPipeline:
                     "competitor_url": row_url,
                     "reason": clean_text(row.get("reason")),
                     "other_reason": clean_text(row.get("other_reason")),
+                    "approval_status": clean_text(row.get("approval_status")),
+                    "reviewed_by_user": clean_text(row.get("reviewed_by_user")),
                     "cm_received_sku": clean_text(row.get("cm_received_sku")),
                     "competitor_name": clean_text(row.get("competitor_name")),
                     "last_update_date": clean_text(row.get("last_update_date")),
@@ -733,7 +1029,9 @@ class ReconciliationPipeline:
             "MPN": 5,
             "MPN_PARTIAL_GTIN": 4,
             "MPN_PARTIAL": 3,
+            "URL_ID": 3,
             "GTIN": 2,
+            "CONTENT_STRONG": 1,
             "URL_HANDLE": 1,
             "NONE": 0,
         }.get(value, 0)
@@ -747,12 +1045,22 @@ class ReconciliationPipeline:
             "mpn_exact_all": False,
             "mpn_partial_all": False,
             "mpn_any": False,
+            "url_id_match": False,
             "url_key_match": False,
             "brand_exact": False,
             "brand_clone": False,
             "brand_conflict": False,
             "category_exact": False,
             "category_partial": False,
+            "name_url_full": False,
+            "name_url_high": False,
+            "name_url_partial": False,
+            "osb_url_full": False,
+            "osb_url_high": False,
+            "osb_url_partial": False,
+            "set_mismatch": False,
+            "bed_part_mismatch": False,
+            "other_product_id_conflict": False,
         }
         signal = "NONE"
         remark = ""
@@ -782,17 +1090,14 @@ class ReconciliationPipeline:
                 if not left_norm or not right_norm:
                     return False
 
-                # EXACT match allowed ONLY when both sides are single-valued
-                if not partial and len(left_norm) == 1 and len(right_norm) == 1:
-                    return left_norm[0] == right_norm[0]
-
-                # PARTIAL match allowed ONLY when both sides are single-valued
-                if partial and len(left_norm) == 1 and len(right_norm) == 1:
-                    l = left_norm[0]
-                    r = right_norm[0]
-                    return l in r or r in l
-
-                # If either side contains multiple values → do not treat as exact/partial
+                for l in left_norm:
+                    for r in right_norm:
+                        if not partial:
+                            if l == r:
+                                return True
+                        else:
+                            if l in r or r in l:
+                                return True
                 return False
 
             # Priority 1: MPN
@@ -844,6 +1149,130 @@ class ReconciliationPipeline:
             signal = "GTIN"
             score = 700
             reasons.append("GTIN exact")
+
+        url_tokens = row.get("_url_tokens", [])
+        url_id_tokens = row.get("_url_id_tokens", [])
+        url_tokens_path = row.get("_url_tokens_path", url_tokens)
+        url_id_tokens_path = row.get("_url_id_tokens_path", url_id_tokens)
+
+        # URL ID token match (MPN/SKU/PART appearing in URL)
+        for token in sys_row.get("_search_id_tokens", []):
+            token_norm = normalize_text(token)
+            if token_norm and token_norm in url_id_tokens:
+                flags["url_id_match"] = True
+                reasons.append("ID token found in URL")
+                score = max(score, 720)
+                if signal == "NONE":
+                    signal = "URL_ID"
+                break
+
+        # Name vs URL tokens (legacy-style matching)
+        name_tokens = sys_row.get("_name_tokens", [])
+        name_url_percent, matched_name_tokens = name_url_match_percent(name_tokens, url_tokens)
+        if name_url_percent >= 100:
+            flags["name_url_full"] = True
+            score += 70
+            reasons.append("Full name tokens in URL")
+        elif name_url_percent >= 90:
+            flags["name_url_high"] = True
+            score += 60
+            reasons.append("High name tokens in URL")
+        elif name_url_percent >= 50:
+            flags["name_url_partial"] = True
+            score += 25
+            reasons.append("Partial name tokens in URL")
+
+        # OSB URL tokens vs competitor URL
+        osb_tokens = sys_row.get("_osb_tokens", [])
+        osb_percent, matched_osb_tokens = name_url_match_percent(osb_tokens, url_tokens)
+        if name_url_percent == 0 and osb_tokens:
+            osb_percent_path, matched_osb_tokens_path = name_url_match_percent(osb_tokens, url_tokens_path)
+            if osb_percent_path > osb_percent:
+                osb_percent = osb_percent_path
+                matched_osb_tokens = matched_osb_tokens_path
+        if osb_percent >= 100:
+            flags["osb_url_full"] = True
+            score += 70
+            reasons.append("Full OSB URL tokens in URL")
+        elif osb_percent >= 90:
+            flags["osb_url_high"] = True
+            score += 60
+            reasons.append("High OSB URL tokens in URL")
+        elif osb_percent >= 50:
+            flags["osb_url_partial"] = True
+            score += 25
+            reasons.append("Partial OSB URL tokens in URL")
+
+        # Pending URL tokens (for extra confidence boost)
+        pending_tokens = [
+            t
+            for t in url_tokens
+            if t not in matched_name_tokens
+            and t not in matched_osb_tokens
+            and t not in STOP_WORDS
+        ]
+        if not pending_tokens and (flags["name_url_full"] or flags["osb_url_full"] or flags["url_id_match"]):
+            score += 60
+            reasons.append("No pending URL tokens")
+
+        if (
+            signal == "NONE"
+            and (flags["name_url_high"] or flags["name_url_full"])
+            and (flags["osb_url_high"] or flags["osb_url_full"])
+        ):
+            signal = "CONTENT_STRONG"
+            score = max(score, 520)
+            reasons.append("Name + OSB URL alignment")
+
+        # Set mismatch checks (URL indicates set, system name not set)
+        url_is_set = bool(row.get("_url_has_set")) or is_set_from_text(
+            url_tokens, raw.get("Ref Product Name", "") + " " + raw.get("Ref Product URL", "")
+        )
+        sys_is_set = bool(sys_row.get("_is_set"))
+        sys_type = clean_text(sys_row.get("type", "")) if "type" in sys_row else ""
+        if (
+            url_is_set
+            and not sys_is_set
+            and sys_row.get("cat", "") not in EXCLUDE_CATEGORIES
+            and (not sys_type or sys_type == "simple")
+        ):
+            flags["set_mismatch"] = True
+            score -= 200
+            reasons.append("Set mismatch (URL suggests set)")
+
+        # Bed part mismatch (headboard/footboard/rails)
+        has_with_token = bool(row.get("_url_contains_with")) or any(t in {"with", "w", "bench"} for t in url_tokens)
+        pending_bed_parts = any(t in BED_PART_TOKENS for t in pending_tokens)
+        part_tokens = [normalize_text(t) for t in sys_row.get("_part_tokens", []) if normalize_text(t)]
+        parts_all_in_url = bool(part_tokens) and all(t in url_id_tokens_path for t in part_tokens)
+        if (
+            pending_bed_parts
+            and not has_with_token
+            and not parts_all_in_url
+            and sys_row.get("cat", "") != "Bed Frames & Headboards"
+        ):
+            flags["bed_part_mismatch"] = True
+            score -= 150
+            reasons.append("URL suggests bed parts for non-bed category")
+
+        # Other product ID conflict within same brand
+        brand_key = sys_row.get("_brand", "")
+        if brand_key:
+            token_map = self.brand_id_token_map.get(brand_key, {})
+            conflict = False
+            candidate_tokens = set(url_id_tokens) | set(row.get("_mpn_tokens", []))
+            for token in candidate_tokens:
+                token_norm = normalize_text(token)
+                if not is_strong_id_token(token_norm):
+                    continue
+                pids = token_map.get(token_norm, set())
+                if pids and (sys_row.get("product_id") not in pids or len(pids) > 1):
+                    conflict = True
+                    break
+            if conflict:
+                flags["other_product_id_conflict"] = True
+                score -= 100
+                reasons.append("URL/MPN aligns to other product ID in same brand")
 
         if sys_row["_url_slug"] and row["_handle"] and sys_row["_url_slug"] == row["_handle"]:
             flags["url_key_match"] = True
@@ -897,19 +1326,30 @@ class ReconciliationPipeline:
 
         if signal in {"MPN_GTIN", "MPN"}:
             confidence = "HIGH"
-        elif signal in {"MPN_PARTIAL_GTIN", "MPN_PARTIAL", "GTIN"}:
+        elif signal in {"MPN_PARTIAL_GTIN", "MPN_PARTIAL", "GTIN", "URL_ID"}:
             confidence = "MEDIUM"
+        elif signal == "CONTENT_STRONG":
+            confidence = "LOW"
         else:
             confidence = "LOW"
 
         # Upgrade partial MPN to HIGH if brand is exact
         if signal == "MPN_PARTIAL" and flags.get("brand_exact"):
             confidence = "HIGH"
+        if signal == "URL_ID" and flags.get("brand_exact") and (flags.get("name_url_high") or flags.get("name_url_full")):
+            confidence = "HIGH"
+        if signal == "CONTENT_STRONG" and flags.get("brand_exact") and flags.get("name_url_full"):
+            confidence = "MEDIUM"
 
         # Category cannot override strong mismatch
         if flags["category_partial"] and flags["brand_conflict"] and signal not in {"MPN_GTIN", "MPN", "GTIN"}:
             confidence = "LOW"
         if flags["brand_conflict"] and signal not in {"MPN_GTIN", "MPN", "GTIN"}:
+            confidence = "LOW"
+
+        # Hard mismatch flags should suppress auto confidence unless exact keys
+        hard_mismatch = flags["set_mismatch"] or flags["bed_part_mismatch"] or flags["other_product_id_conflict"]
+        if hard_mismatch and signal != "MPN_GTIN":
             confidence = "LOW"
 
         return CandidateResult(
@@ -987,6 +1427,9 @@ class ReconciliationPipeline:
                 -int(c.flags["brand_clone"]),
                 -int(c.flags.get("category_exact", False)),
                 -int(c.flags.get("category_partial", False)),
+                int(c.flags.get("set_mismatch", False)),
+                int(c.flags.get("bed_part_mismatch", False)),
+                int(c.flags.get("other_product_id_conflict", False)),
                 -c.name_similarity,
                 c.idx,
             )
@@ -1033,8 +1476,20 @@ class ReconciliationPipeline:
                 anchor_idx = min(param_matched)
                 anchor = self.score_candidate(sys_row, anchor_idx)
                 anchor.reasons.insert(0, "CM URL key+params matched scrape")
-                strong_signal = anchor.signal in {"MPN_GTIN", "MPN", "MPN_PARTIAL_GTIN", "MPN_PARTIAL", "GTIN"}
-                if strong_signal:
+                strong_signal = anchor.signal in {
+                    "MPN_GTIN",
+                    "MPN",
+                    "MPN_PARTIAL_GTIN",
+                    "MPN_PARTIAL",
+                    "GTIN",
+                    "URL_ID",
+                }
+                hard_mismatch = (
+                    anchor.flags.get("set_mismatch")
+                    or anchor.flags.get("bed_part_mismatch")
+                    or anchor.flags.get("other_product_id_conflict")
+                )
+                if strong_signal and (not hard_mismatch or anchor.signal == "MPN_GTIN"):
                     return "CM_URL_MATCH_CORRECT", anchor
                 return "CM_URL_MATCH_WEAK", anchor
             elif pkey:
@@ -1051,9 +1506,14 @@ class ReconciliationPipeline:
         if top is None:
             return "CM_URL_MATCH_WRONG", None
 
-        strong = top.signal in {"MPN_GTIN", "MPN", "MPN_PARTIAL_GTIN", "MPN_PARTIAL", "GTIN"}
-        if strong and (not top.flags["brand_conflict"] or top.signal == "MPN_GTIN"):
+        strong = top.signal in {"MPN_GTIN", "MPN", "MPN_PARTIAL_GTIN", "MPN_PARTIAL", "GTIN", "URL_ID"}
+        hard_mismatch = top.flags.get("set_mismatch") or top.flags.get("bed_part_mismatch") or top.flags.get(
+            "other_product_id_conflict"
+        )
+        if strong and not hard_mismatch and (not top.flags["brand_conflict"] or top.signal == "MPN_GTIN"):
             return "CM_URL_MATCH_CORRECT", top
+        if hard_mismatch:
+            return "CM_URL_MATCH_WEAK", top
         return "CM_URL_MATCH_WRONG", top
 
     def evaluate_product(
@@ -1127,6 +1587,14 @@ class ReconciliationPipeline:
             and best.signal in {"MPN_GTIN", "MPN", "GTIN"}
             and existing_state in {"CM_URL_MATCH_WRONG", "CM_URL_NOT_IN_SCRAPE"}
         )
+        hard_mismatch = bool(
+            best is not None
+            and (
+                best.flags.get("set_mismatch")
+                or best.flags.get("bed_part_mismatch")
+                or best.flags.get("other_product_id_conflict")
+            )
+        )
         best_safe = bool(
             best is not None
             and best.signal != "NONE"
@@ -1134,6 +1602,16 @@ class ReconciliationPipeline:
             and not ambiguous
             and (not best_blocked_by_used or exact_reuse_allowed)
             and (not best.flags["brand_conflict"] or brand_override_allowed)
+            and (not hard_mismatch or best.signal == "MPN_GTIN")
+        )
+        name_url_gate = bool(
+            best is not None
+            and (
+                best.name_similarity >= 50
+                or best.flags.get("name_url_partial")
+                or best.flags.get("name_url_high")
+                or best.flags.get("name_url_full")
+            )
         )
 
         # Prevent duplicate URL allocation across add/replace categories
@@ -1150,6 +1628,10 @@ class ReconciliationPipeline:
         cm_competitor_id = cm_row.get("competitor_id", "") if cm_row else ""
         cm_repricer_id = cm_row.get("repricer_id", "") if cm_row else ""
         cm_sku_mismatch = cm_row.get("sku_mismatch", "") if cm_row else ""
+        cm_other_reason = cm_row.get("other_reason", "") if cm_row else ""
+        cm_approval_status = cm_row.get("approval_status", "") if cm_row else ""
+        cm_reviewed_by_user = cm_row.get("reviewed_by_user", "") if cm_row else ""
+        cm_wrong_flag = wrong_reason(cm_reason) or wrong_reason(cm_other_reason)
         if not cm_competitor_id:
             cm_competitor_id = self.cm_competitor_id
         if not cm_repricer_id:
@@ -1170,13 +1652,27 @@ class ReconciliationPipeline:
                 best_remark = existing_hit.remark
                 best_reasons = "; ".join(existing_hit.reasons[:8])
                 self.used_scrape_indices.add(existing_hit.idx)
+                if best_url:
+                    self.allocated_ref_urls.add(url_fingerprint(best_url))
 
-            if cm_row and wrong_reason(cm_reason):
+            # Approve only when CM was marked wrong but we validated it as correct
+            if cm_row and cm_wrong_flag:
                 self.approve_rows.append(
                     {
                         "product_id": pid,
                         "competitor_id": cm_competitor_id,
                         "repricer_id": cm_repricer_id,
+                        "sku": sys_row.get("sku", ""),
+                        "our_mpn": sys_row.get("mpn", ""),
+                        "our_status": sys_row.get("system_status", ""),
+                        "brand_label": sys_row.get("brand_label", ""),
+                        "osb_url": sys_row.get("osb_url", ""),
+                        "90 days Sales": sys_row.get("90 days Sales", ""),
+                        "existing_competitor_url": cm_url,
+                        "existing_reason": cm_reason,
+                        "approval_status": cm_approval_status,
+                        "reviewed_by_user": cm_reviewed_by_user,
+                        "sku_mismatch": cm_sku_mismatch,
                         "type": "update",
                         "source": "CM",
                         "is_issue": "Approved",
@@ -1206,27 +1702,56 @@ class ReconciliationPipeline:
                 best_remark = existing_hit.remark
                 best_reasons = "; ".join(existing_hit.reasons[:8])
                 self.used_scrape_indices.add(existing_hit.idx)
+                if best_url:
+                    self.allocated_ref_urls.add(url_fingerprint(best_url))
+
             elif best_safe and replace_needed:
                 decision = "REPLACE_WRONG"
                 decision_reason = "Existing URL found but weak identity; stronger replacement found"
-                self.new_update_rows.append(
-                    {
-                        "product_id": pid,
-                        "competitor_id": cm_competitor_id,
-                        "repricer_id": cm_repricer_id,
-                        "sku": sys_row.get("sku", ""),
-                        "ref_sku": best_ref_sku,
-                        "ref_url": best_url,
-                        "ref_name": best_name,
-                        "send_in_feed": 1,
-                        "action": "replace_wrong_match",
-                        "confidence": best_conf,
-                        "score": best_score,
-                        "remark": best_remark,
-                        "existing_url": cm_url,
-                    }
-                )
-                self.used_scrape_indices.add(best.idx)
+                if cm_wrong_flag:
+                    decision = "MANUAL_REVIEW"
+                    decision_reason = "CM marked wrong match; skip auto update"
+                    self.manual_review_rows.append(
+                        {
+                            "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
+                            "product_id": pid,
+                            "sku": sys_row.get("sku", ""),
+                            "cm_url": cm_url,
+                            "cm_reason": cm_reason,
+                            "top_candidates": top_candidates,
+                        }
+                    )
+                else:
+                    self.new_update_rows.append(
+                        {
+                            "product_id": pid,
+                            "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
+                            "sku": sys_row.get("sku", ""),
+                            "our_mpn": sys_row.get("mpn", ""),
+                            "our_status": sys_row.get("system_status", ""),
+                            "brand_label": sys_row.get("brand_label", ""),
+                            "osb_url": sys_row.get("osb_url", ""),
+                            "90 days Sales": sys_row.get("90 days Sales", ""),
+                            "ref_sku": best_ref_sku,
+                            "ref_url": best_url,
+                            "ref_name": best_name,
+                            "send_in_feed": 1,
+                            "action": "replace_wrong_match",
+                            "confidence": best_conf,
+                            "score": best_score,
+                            "remark": best_remark,
+                            "existing_url": cm_url,
+                            "existing_reason": cm_reason,
+                            "approval_status": cm_approval_status,
+                            "reviewed_by_user": cm_reviewed_by_user,
+                            "sku_mismatch": cm_sku_mismatch,
+                        }
+                    )
+                    self.used_scrape_indices.add(best.idx)
+                    if best_url:
+                        self.allocated_ref_urls.add(url_fingerprint(best_url))
             elif existing_hit is not None:
                 decision = "KEEP_EXISTING"
                 decision_reason = "Existing URL validated by key+params; no stronger safe replacement"
@@ -1241,27 +1766,12 @@ class ReconciliationPipeline:
                 best_remark = existing_hit.remark
                 best_reasons = "; ".join(existing_hit.reasons[:8])
                 self.used_scrape_indices.add(existing_hit.idx)
+                if best_url:
+                    self.allocated_ref_urls.add(url_fingerprint(best_url))
             else:
                 decision = "NO_MATCH"
                 decision_reason = "Weak existing URL match and no safe candidate"
 
-            if best_signal and best_signal == "NONE":
-                decision = "WRONG_NO_REPLACEMENT"
-                decision_reason = "Existing mapping wrong and no valid candidate signal"
-                self.wrong_no_replacement_rows.append(
-                    {
-                        "competitor_id": cm_competitor_id,
-                        "repricer_id": cm_repricer_id,
-                        "product_id": pid,
-                        "sku": sys_row.get("sku", ""),
-                        "brand_label": sys_row.get("brand_label", ""),
-                        "cm_url": cm_url,
-                        "cm_reason": cm_reason,
-                        "best_candidate_url": "",
-                        "best_candidate_score": "",
-                        "best_candidate_confidence": "",
-                    }
-                )
             history_out[pid] = 0
 
         elif existing_state == "CM_URL_MATCH_WRONG":
@@ -1277,7 +1787,7 @@ class ReconciliationPipeline:
                         "sku": sys_row.get("sku", ""),
                         "brand_label": sys_row.get("brand_label", ""),
                         "system_status": sys_row.get("system_status", ""),
-                            "sku_mismatch": cm_sku_mismatch,
+                        "sku_mismatch": cm_sku_mismatch,
                         "cm_url": cm_url,
                         "cm_reason": cm_reason,
                         "best_candidate_url": "",
@@ -1291,26 +1801,50 @@ class ReconciliationPipeline:
                 if best_safe and replace_needed:
                     decision = "REPLACE_WRONG"
                     decision_reason = "Existing mapping wrong; safe replacement found"
-                    self.new_update_rows.append(
-                        {
-                            "product_id": pid,
-                            "competitor_id": cm_competitor_id,
-                            "repricer_id": cm_repricer_id,
-                            "sku": sys_row.get("sku", ""),
-                            "ref_sku": best_ref_sku,
-                            "ref_url": best_url,
-                            "ref_name": best_name,
-                            "send_in_feed": 1,
-                            "action": "replace_wrong_match",
-                            "confidence": best_conf,
-                            "score": best_score,
-                            "remark": best_remark,
-                            "existing_url": cm_url,
-                        }
-                    )
-                    self.used_scrape_indices.add(best.idx)
-                    if best_url:
-                        self.allocated_ref_urls.add(url_fingerprint(best_url))
+                    if cm_wrong_flag:
+                        decision = "MANUAL_REVIEW"
+                        decision_reason = "CM marked wrong match; skip auto update"
+                        self.manual_review_rows.append(
+                            {
+                                "competitor_id": cm_competitor_id,
+                                "repricer_id": cm_repricer_id,
+                                "product_id": pid,
+                                "sku": sys_row.get("sku", ""),
+                                "cm_url": cm_url,
+                                "cm_reason": cm_reason,
+                                "top_candidates": top_candidates,
+                            }
+                        )
+                    else:
+                        self.new_update_rows.append(
+                            {
+                                "product_id": pid,
+                                "competitor_id": cm_competitor_id,
+                                "repricer_id": cm_repricer_id,
+                                "sku": sys_row.get("sku", ""),
+                                "our_mpn": sys_row.get("mpn", ""),
+                                "our_status": sys_row.get("system_status", ""),
+                                "brand_label": sys_row.get("brand_label", ""),
+                                "osb_url": sys_row.get("osb_url", ""),
+                                "90 days Sales": sys_row.get("90 days Sales", ""),
+                                "ref_sku": best_ref_sku,
+                                "ref_url": best_url,
+                                "ref_name": best_name,
+                                "send_in_feed": 1,
+                                "action": "replace_wrong_match",
+                                "confidence": best_conf,
+                                "score": best_score,
+                                "remark": best_remark,
+                                "existing_url": cm_url,
+                                "existing_reason": cm_reason,
+                                "approval_status": cm_approval_status,
+                                "reviewed_by_user": cm_reviewed_by_user,
+                                "sku_mismatch": cm_sku_mismatch,
+                            }
+                        )
+                        self.used_scrape_indices.add(best.idx)
+                        if best_url:
+                            self.allocated_ref_urls.add(url_fingerprint(best_url))
                     history_out[pid] = 0
                 elif ambiguous:
                     decision = "MANUAL_REVIEW"
@@ -1390,27 +1924,51 @@ class ReconciliationPipeline:
             if best_safe:
                 decision = "REPLACE_MISSING_URL"
                 decision_reason = "Existing URL missing in scrape; replacement found"
-                self.new_update_rows.append(
-                    {
-                        "product_id": pid,
-                        "competitor_id": cm_competitor_id,
-                        "repricer_id": cm_repricer_id,
-                        "sku": sys_row.get("sku", ""),
-                        "ref_sku": best_ref_sku,
-                        "ref_url": best_url,
-                        "ref_name": best_name,
-                        "send_in_feed": 1,
-                        "action": "replace_missing_url",
-                        "confidence": best_conf,
-                        "score": best_score,
-                        "remark": best_remark,
-                        "existing_url": cm_url,
-                    }
-                )
-                self.used_scrape_indices.add(best.idx)
-                if best_url:
-                    self.allocated_ref_urls.add(url_fingerprint(best_url))
-                history_out[pid] = 0
+                if cm_wrong_flag:
+                    decision = "MANUAL_REVIEW"
+                    decision_reason = "CM marked wrong match; skip auto update"
+                    self.manual_review_rows.append(
+                        {
+                            "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
+                            "product_id": pid,
+                            "sku": sys_row.get("sku", ""),
+                            "cm_url": cm_url,
+                            "cm_reason": cm_reason,
+                            "top_candidates": top_candidates,
+                        }
+                    )
+                else:
+                    self.new_update_rows.append(
+                        {
+                            "product_id": pid,
+                            "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
+                            "sku": sys_row.get("sku", ""),
+                            "our_mpn": sys_row.get("mpn", ""),
+                            "our_status": sys_row.get("system_status", ""),
+                            "brand_label": sys_row.get("brand_label", ""),
+                            "osb_url": sys_row.get("osb_url", ""),
+                            "90 days Sales": sys_row.get("90 days Sales", ""),
+                            "ref_sku": best_ref_sku,
+                            "ref_url": best_url,
+                            "ref_name": best_name,
+                            "send_in_feed": 1,
+                            "action": "replace_missing_url",
+                            "confidence": best_conf,
+                            "score": best_score,
+                            "remark": best_remark,
+                            "existing_url": cm_url,
+                            "existing_reason": cm_reason,
+                            "approval_status": cm_approval_status,
+                            "reviewed_by_user": cm_reviewed_by_user,
+                            "sku_mismatch": cm_sku_mismatch,
+                        }
+                    )
+                    self.used_scrape_indices.add(best.idx)
+                    if best_url:
+                        self.allocated_ref_urls.add(url_fingerprint(best_url))
+                    history_out[pid] = 0
             else:
                 decision = "CRAWL_MISS_STALE" if miss_count >= 3 else "CRAWL_MISS_PENDING"
                 decision_reason = "Existing URL not found in scrape and no safe replacement"
@@ -1424,7 +1982,7 @@ class ReconciliationPipeline:
                         "gtin": sys_row.get("gtin", ""),
                         "brand_label": sys_row.get("brand_label", ""),
                         "system_status": sys_row.get("system_status", ""),
-                            "sku_mismatch": cm_sku_mismatch,
+                        "sku_mismatch": cm_sku_mismatch,
                         "existing_url": cm_url,
                         "retry_query": f"{sys_row.get('brand_label','')} {sys_row.get('mpn','')}".strip(),
                         "miss_count": miss_count,
@@ -1446,7 +2004,7 @@ class ReconciliationPipeline:
                         "sku": sys_row.get("sku", ""),
                         "brand_label": sys_row.get("brand_label", ""),
                         "system_status": sys_row.get("system_status", ""),
-                            "sku_mismatch": cm_sku_mismatch,
+                        "sku_mismatch": cm_sku_mismatch,
                         "cm_url": cm_url,
                         "cm_reason": "",
                         "best_candidate_url": "",
@@ -1457,26 +2015,64 @@ class ReconciliationPipeline:
             elif best_safe:
                 decision = "ADD_NEW_MATCH"
                 decision_reason = "No existing CM mapping; safe candidate found"
-                self.new_update_rows.append(
-                    {
-                        "product_id": pid,
-                        "competitor_id": cm_competitor_id,
-                        "repricer_id": cm_repricer_id,
-                        "sku": sys_row.get("sku", ""),
-                        "ref_sku": best_ref_sku,
-                        "ref_url": best_url,
-                        "ref_name": best_name,
-                        "send_in_feed": 1,
-                        "action": "add_new_match",
-                        "confidence": best_conf,
-                        "score": best_score,
-                        "remark": best_remark,
-                        "existing_url": "",
-                    }
-                )
-                self.used_scrape_indices.add(best.idx)
-                if best_url:
-                    self.allocated_ref_urls.add(url_fingerprint(best_url))
+                if not name_url_gate:
+                    decision = "MANUAL_REVIEW"
+                    decision_reason = "Name/URL match below 50% for add_new_match"
+                    self.manual_review_rows.append(
+                        {
+                            "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
+                            "product_id": pid,
+                            "sku": sys_row.get("sku", ""),
+                            "cm_url": "",
+                            "cm_reason": "",
+                            "top_candidates": top_candidates,
+                        }
+                    )
+                elif cm_wrong_flag:
+                    decision = "MANUAL_REVIEW"
+                    decision_reason = "CM marked wrong match; skip auto update"
+                    self.manual_review_rows.append(
+                        {
+                            "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
+                            "product_id": pid,
+                            "sku": sys_row.get("sku", ""),
+                            "cm_url": "",
+                            "cm_reason": "",
+                            "top_candidates": top_candidates,
+                        }
+                    )
+                else:
+                    self.new_update_rows.append(
+                        {
+                            "product_id": pid,
+                            "competitor_id": cm_competitor_id,
+                            "repricer_id": cm_repricer_id,
+                            "sku": sys_row.get("sku", ""),
+                            "our_mpn": sys_row.get("mpn", ""),
+                            "our_status": sys_row.get("system_status", ""),
+                            "brand_label": sys_row.get("brand_label", ""),
+                            "osb_url": sys_row.get("osb_url", ""),
+                            "90 days Sales": sys_row.get("90 days Sales", ""),
+                            "ref_sku": best_ref_sku,
+                            "ref_url": best_url,
+                            "ref_name": best_name,
+                            "send_in_feed": 1,
+                            "action": "add_new_match",
+                            "confidence": best_conf,
+                            "score": best_score,
+                            "remark": best_remark,
+                            "existing_url": "",
+                            "existing_reason": "",
+                            "approval_status": cm_approval_status,
+                            "reviewed_by_user": cm_reviewed_by_user,
+                            "sku_mismatch": cm_sku_mismatch,
+                        }
+                    )
+                    self.used_scrape_indices.add(best.idx)
+                    if best_url:
+                        self.allocated_ref_urls.add(url_fingerprint(best_url))
             elif best is not None and best.flags["brand_conflict"]:
                 decision = "MANUAL_REVIEW"
                 decision_reason = "Brand mismatch for no-CM candidate"
@@ -1531,12 +2127,18 @@ class ReconciliationPipeline:
                 "product_id": pid,
                 "sku": sys_row.get("sku", ""),
                 "our_mpn": sys_row.get("mpn", ""),
+                "our_status": sys_row.get("system_status", ""),
                 "our_gtin": sys_row.get("gtin", ""),
                 "our_brand": sys_row.get("brand_label", ""),
                 "our_category": sys_row.get("cat", ""),
+                "brand_label": sys_row.get("brand_label", ""),
+                "osb_url": sys_row.get("osb_url", ""),
+                "90 days Sales": sys_row.get("90 days Sales", ""),
                 "system_status": sys_row.get("system_status", ""),
                 "existing_competitor_url": cm_url,
                 "existing_reason": cm_reason,
+                "approval_status": cm_approval_status,
+                "reviewed_by_user": cm_reviewed_by_user,
                 "sku_mismatch": cm_sku_mismatch,
                 "existing_state": existing_state,
                 "best_candidate_url": best_url,
@@ -1692,39 +2294,6 @@ class ReconciliationPipeline:
         write_json(self.history_file, cleaned)
 
     def write_outputs(self, crawl_quality: str, required_conf: str) -> None:
-        # Ensure ref_url appears only once across key decision types
-        # Count occurrences of best_candidate_url across decisions:
-        # KEEP_EXISTING, ADD_NEW_MATCH, REPLACE_WRONG, REPLACE_MISSING_URL
-        decision_url_counter: dict[str, int] = {}
-
-        allowed_decisions = {
-            "KEEP_EXISTING",
-            "ADD_NEW_MATCH",
-            "REPLACE_WRONG",
-            "REPLACE_MISSING_URL",
-        }
-
-        for row in self.report_rows:
-            decision = clean_text(row.get("decision", ""))
-            url = clean_text(row.get("best_candidate_url", ""))
-            if not url or decision not in allowed_decisions:
-                continue
-            key = url_fingerprint(url)
-            decision_url_counter[key] = decision_url_counter.get(key, 0) + 1
-
-        # Keep only URLs that appear exactly once across these decisions
-        filtered_new_update_rows: list[dict[str, Any]] = []
-        for row in self.new_update_rows:
-            ref_url = clean_text(row.get("ref_url", ""))
-            if not ref_url:
-                continue
-            key = url_fingerprint(ref_url)
-
-            # If URL assigned more than once anywhere, skip entirely
-            if decision_url_counter.get(key, 0) == 1:
-                filtered_new_update_rows.append(row)
-
-        self.new_update_rows = filtered_new_update_rows
 
         match_report_headers = [
             "product_id",
@@ -1732,12 +2301,18 @@ class ReconciliationPipeline:
             "repricer_id",
             "sku",
             "our_mpn",
+            "our_status",
             "our_gtin",
             "our_brand",
             "our_category",
+            "brand_label",
+            "osb_url",
+            "90 days Sales",
             "system_status",
             "existing_competitor_url",
             "existing_reason",
+            "approval_status",
+            "reviewed_by_user",
             "sku_mismatch",
             "existing_state",
             "best_candidate_url",
@@ -1758,6 +2333,11 @@ class ReconciliationPipeline:
             "competitor_id",
             "repricer_id",
             "sku",
+            "our_mpn",
+            "our_status",
+            "brand_label",
+            "osb_url",
+            "90 days Sales",
             "ref_sku",
             "ref_url",
             "ref_name",
@@ -1767,8 +2347,30 @@ class ReconciliationPipeline:
             "score",
             "remark",
             "existing_url",
+            "existing_reason",
+            "approval_status",
+            "reviewed_by_user",
+            "sku_mismatch",
         ]
-        approve_headers = ["product_id", "competitor_id", "repricer_id", "type", "source", "is_issue"]
+        approve_headers = [
+            "product_id",
+            "competitor_id",
+            "repricer_id",
+            "sku",
+            "our_mpn",
+            "our_status",
+            "brand_label",
+            "osb_url",
+            "90 days Sales",
+            "existing_competitor_url",
+            "existing_reason",
+            "approval_status",
+            "reviewed_by_user",
+            "sku_mismatch",
+            "type",
+            "source",
+            "is_issue",
+        ]
         wrong_headers = [
             "product_id",
             "competitor_id",
@@ -1792,6 +2394,8 @@ class ReconciliationPipeline:
             "mpn",
             "gtin",
             "brand_label",
+            "system_status",
+            "sku_mismatch",
             "existing_url",
             "retry_query",
             "miss_count",

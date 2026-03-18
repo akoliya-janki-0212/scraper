@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Validation Builder</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/validate.css">
+</head>
+<body>
+    <header class="header">
+        <div class="header-inner">
+            <div>
+                <h1>Validation Builder</h1>
+                <p class="subtitle">Configure filters and scoring, generate validation outputs, and download a ZIP.</p>
+            </div>
+            <div class="header-actions">
+                <a class="link-btn" href="/">Workflow Dashboard</a>
+                <a class="link-btn" href="/ai-score">AI Score UI</a>
+            </div>
+        </div>
+    </header>
+
+    <main class="container">
+        <section class="panel">
+            <div class="panel-title">Inputs</div>
+            <div class="panel-desc">Upload CSVs or use the files from <code>inputValidateFiles</code>.</div>
+            <div class="grid grid-3">
+                <label class="field">
+                    <span>Competitor CSV</span>
+                    <input id="comp-file" type="file" accept=".csv" />
+                </label>
+                <label class="field">
+                    <span>System CSV</span>
+                    <input id="sys-file" type="file" accept=".csv" />
+                </label>
+                <label class="field">
+                    <span>Scraped CSV</span>
+                    <input id="scraped-file" type="file" accept=".csv" />
+                </label>
+            </div>
+            <label class="checkline">
+                <input id="use-existing" type="checkbox" checked />
+                Use existing files in <code>inputValidateFiles</code> when an upload is missing.
+            </label>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">Filters</div>
+            <div class="panel-desc">Define which rows should be flagged and optionally filtered from output.</div>
+            <div class="grid grid-2">
+                <div class="field">
+                    <span>Allowed Reasons</span>
+                    <div id="allowed-reasons" class="pill-group"></div>
+                </div>
+                <label class="field">
+                    <span>Required Type</span>
+                    <select id="required-type">
+                        <option value="">Any</option>
+                        <option value="simple">Simple</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Exclude Competitors (comma separated)</span>
+                    <input id="exclude-competitors" type="text" placeholder="Over Stock, Overstock.com" />
+                </label>
+                <label class="field">
+                    <span>Include Competitors (comma separated)</span>
+                    <input id="include-competitors" type="text" placeholder="Bed Bath & Beyond, Amazon" />
+                </label>
+                <label class="checkline">
+                    <input id="require-sku" type="checkbox" checked />
+                    Require competitor SKU
+                </label>
+                <label class="checkline">
+                    <input id="block-visibility" type="checkbox" checked />
+                    Exclude visibility “Not Visible Individually”
+                </label>
+                <label class="checkline">
+                    <input id="apply-row-filters" type="checkbox" />
+                    Apply filters to output rows (skip non-matching rows)
+                </label>
+            </div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">Configuration</div>
+            <div class="panel-desc">Set validation mode, output type, and scoring weights.</div>
+            <div class="grid grid-3">
+                <label class="field">
+                    <span>Mode</span>
+                    <select id="mode">
+                        <option value="cm">CM</option>
+                        <option value="pr">PR</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Output Type</span>
+                    <select id="output-type">
+                        <option value="valid_invalid">Valid/Invalid</option>
+                        <option value="combined">Combined</option>
+                        <option value="competitor_wise">Competitor Wise</option>
+                    </select>
+                </label>
+                <label class="field">
+                    <span>Exclude Categories (one per line)</span>
+                    <textarea id="exclude-category" rows="4"></textarea>
+                </label>
+            </div>
+
+            <div class="panel-subtitle">Score Config</div>
+            <div id="score-config" class="score-grid"></div>
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">Run</div>
+            <div class="panel-desc">Generate validation outputs and download the ZIP.</div>
+            <div class="actions">
+                <button id="run-btn" class="btn btn-primary">Generate Files</button>
+                <a id="download-btn" class="btn" href="#" target="_blank" rel="noopener" style="display:none;">Download ZIP</a>
+            </div>
+            <div class="status" id="status-text">Ready.</div>
+            <pre id="log-output" class="log-box">Waiting for a run...</pre>
+        </section>
+    </main>
+
+    <script>
+        const state = {
+            runId: null,
+            defaults: null,
+            polling: null
+        };
+
+        function qs(id) {
+            return document.getElementById(id);
+        }
+
+        function setStatus(message, isError=false) {
+            const el = qs('status-text');
+            el.textContent = message;
+            el.className = isError ? 'status error' : 'status';
+        }
+
+        function setBusy(isBusy) {
+            document.querySelectorAll('button, input, select, textarea').forEach(el => {
+                el.disabled = isBusy;
+            });
+        }
+
+        function renderAllowedReasons(reasons) {
+            const wrap = qs('allowed-reasons');
+            wrap.innerHTML = '';
+            reasons.forEach(reason => {
+                const label = document.createElement('label');
+                label.className = 'pill';
+                label.innerHTML = `<input type="checkbox" value="${reason}" checked />${reason}`;
+                wrap.appendChild(label);
+            });
+        }
+
+        function renderScoreConfig(config) {
+            const wrap = qs('score-config');
+            wrap.innerHTML = '';
+            Object.keys(config).sort().forEach(key => {
+                const row = document.createElement('label');
+                row.className = 'score-row';
+                row.innerHTML = `
+                    <span>${key}</span>
+                    <input type="number" step="1" data-score-key="${key}" value="${config[key]}" />
+                `;
+                wrap.appendChild(row);
+            });
+        }
+
+        function loadDefaults() {
+            fetch('/api/validate/defaults')
+                .then(res => res.json())
+                .then(data => {
+                    state.defaults = data;
+                    renderAllowedReasons(data.filter_config.allowed_reasons || []);
+                    renderScoreConfig(data.score_config || {});
+                    qs('exclude-competitors').value = (data.filter_config.exclude_competitors || []).join(', ');
+                    qs('include-competitors').value = (data.filter_config.include_competitors || []).join(', ');
+                    qs('require-sku').checked = !!data.filter_config.require_competitor_sku;
+                    qs('block-visibility').checked = (data.filter_config.disallowed_visibility || []).includes('Not Visible Individually');
+                    qs('required-type').value = data.filter_config.required_type || '';
+                    qs('exclude-category').value = (data.exclude_category || []).join('\n');
+                })
+                .catch(() => {
+                    setStatus('Failed to load defaults.', true);
+                });
+        }
+
+        function collectScoreConfig() {
+            const result = {};
+            document.querySelectorAll('[data-score-key]').forEach(input => {
+                const key = input.dataset.scoreKey;
+                const val = input.value;
+                if (val !== '') {
+                    result[key] = Number(val);
+                }
+            });
+            return result;
+        }
+
+        function collectFilterConfig() {
+            const allowed = Array.from(qs('allowed-reasons').querySelectorAll('input:checked')).map(i => i.value);
+            const excludeCompetitors = qs('exclude-competitors').value || '';
+            const includeCompetitors = qs('include-competitors').value || '';
+            const disallowedVisibility = qs('block-visibility').checked ? ['Not Visible Individually'] : [];
+            return {
+                allowed_reasons: allowed,
+                exclude_competitors: excludeCompetitors,
+                include_competitors: includeCompetitors,
+                disallowed_visibility: disallowedVisibility,
+                required_type: qs('required-type').value,
+                require_competitor_sku: qs('require-sku').checked,
+                apply_row_filters: qs('apply-row-filters').checked,
+            };
+        }
+
+        function collectPayload() {
+            return {
+                mode: qs('mode').value,
+                output_type: qs('output-type').value,
+                use_existing: qs('use-existing').checked,
+                score_config: collectScoreConfig(),
+                filter_config: collectFilterConfig(),
+                exclude_category: qs('exclude-category').value,
+            };
+        }
+
+        function updateLogs(lines) {
+            const box = qs('log-output');
+            if (!lines || lines.length === 0) return;
+            box.textContent = lines.join('\n');
+            box.scrollTop = box.scrollHeight;
+        }
+
+        function startPolling() {
+            if (state.polling) clearInterval(state.polling);
+            state.polling = setInterval(fetchStatus, 2000);
+        }
+
+        function stopPolling() {
+            if (state.polling) clearInterval(state.polling);
+            state.polling = null;
+        }
+
+        function fetchStatus() {
+            if (!state.runId) return;
+            fetch(`/api/validate/status/${state.runId}`)
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        setStatus(data.error, true);
+                        stopPolling();
+                        return;
+                    }
+                    updateLogs(data.logs || []);
+                    if (data.state === 'running') {
+                        setStatus('Running validation...');
+                        return;
+                    }
+                    if (data.state === 'completed') {
+                        setStatus('Completed. ZIP is ready.');
+                        stopPolling();
+                        const dl = qs('download-btn');
+                        dl.href = `/api/validate/download/${state.runId}`;
+                        dl.style.display = 'inline-flex';
+                        setBusy(false);
+                        return;
+                    }
+                    if (data.state === 'error') {
+                        setStatus(data.error || 'Run failed.', true);
+                        stopPolling();
+                        setBusy(false);
+                    }
+                })
+                .catch(() => {
+                    setStatus('Failed to fetch run status.', true);
+                });
+        }
+
+        function runValidation() {
+            const form = new FormData();
+            form.append('payload', JSON.stringify(collectPayload()));
+
+            const compFile = qs('comp-file').files[0];
+            const sysFile = qs('sys-file').files[0];
+            const scrapedFile = qs('scraped-file').files[0];
+            if (compFile) form.append('comp_file', compFile);
+            if (sysFile) form.append('sys_file', sysFile);
+            if (scrapedFile) form.append('scraped_file', scrapedFile);
+
+            setBusy(true);
+            setStatus('Submitting run...');
+            qs('download-btn').style.display = 'none';
+            qs('log-output').textContent = 'Starting validation...';
+
+            fetch('/api/validate/run', { method: 'POST', body: form })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.error) {
+                        setStatus(data.details || data.error, true);
+                        setBusy(false);
+                        return;
+                    }
+                    state.runId = data.run_id;
+                    startPolling();
+                })
+                .catch(() => {
+                    setStatus('Failed to start run.', true);
+                    setBusy(false);
+                });
+        }
+
+        qs('run-btn').addEventListener('click', runValidation);
+        loadDefaults();
+    </script>
+</body>
+</html>

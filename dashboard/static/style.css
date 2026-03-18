@@ -59,6 +59,12 @@ body {
     justify-content: space-between;
 }
 
+.header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
 .header-left {
     display: flex;
     align-items: center;
@@ -92,6 +98,25 @@ body {
 .stats-count { color: var(--text-primary); font-weight: 600; }
 .stats-running { color: var(--green); font-weight: 600; }
 .stats-sep { margin: 0 6px; opacity: 0.4; }
+
+.quick-link {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 8px 14px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    text-decoration: none;
+    background: rgba(255, 255, 255, 0.04);
+    transition: all 0.2s;
+}
+
+.quick-link:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+    background: rgba(255, 255, 255, 0.08);
+}
 
 /* --------------- Filter Bar --------------- */
 
