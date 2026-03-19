@@ -19,7 +19,7 @@ import pandas as pd
 import argparse
 import re
 import shutil
-from urllib.parse import urlparse, unquote
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 PRODUCT_FINAL_COLUMNS = [
     "product_id",
@@ -447,6 +447,350 @@ def normalize_url_path_slug(raw_url):
     except:
         return ""
 
+MAX_PRODUCT_TRIES = 5
+PRODUCT_CLICK_RETRIES = 2
+PANEL_WAIT_SECONDS = 8
+OFFERS_WAIT_SECONDS = 8
+OFFERS_RETRIES = 2
+
+def build_retry_search_url(search_url):
+    """Remove the 1stopbedrooms+ prefix from the q query parameter when present."""
+    try:
+        parsed = urlparse(search_url)
+        query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        updated_pairs = []
+        changed = False
+        for key, value in query_pairs:
+            if key == "q":
+                new_value = re.sub(r"(?i)^1stopbedrooms(?:\s|\+)+", "", value or "")
+                if new_value != value:
+                    value = new_value
+                    changed = True
+            updated_pairs.append((key, value))
+        if not changed:
+            return search_url
+        return urlunparse(parsed._replace(query=urlencode(updated_pairs)))
+    except Exception:
+        return search_url
+
+def log_matching(product_id, message):
+    print(f"[PID {os.getpid()}] {message}")
+
+def wait_for_product_container(driver, timeout=10):
+    return WebDriverWait(driver, timeout).until(
+        EC.presence_of_element_located((By.CLASS_NAME, "dURPMd"))
+    )
+
+def get_visible_product_cards(driver):
+    mains = wait_for_product_container(driver, timeout=10)
+    return mains.find_elements(By.CLASS_NAME, "MtXiu")
+
+def product_matches_keyword(product_name, keyword):
+    normalized_keyword = re.sub(r'\bset\s+of\b', '', keyword or '', flags=re.IGNORECASE)
+    normalized_product_name = re.sub(r'\bset\s+of\b', '', product_name or '', flags=re.IGNORECASE)
+
+    def has_set_word(text):
+        return bool(re.search(r'\bset\b', text or '', flags=re.IGNORECASE))
+
+    return has_set_word(normalized_product_name) == has_set_word(normalized_keyword)
+
+def extract_product_card_meta(product):
+    try:
+        product_name = product.find_element(By.XPATH, ".//div[contains(@class,'gkQHve')]").text
+    except Exception:
+        product_name = ""
+
+    try:
+        seller = product.find_element(By.XPATH, ".//span[contains(@class,'WJMUdc')]").text
+    except Exception:
+        seller = ""
+
+    try:
+        cid = product.get_attribute('id')
+    except Exception:
+        cid = ""
+
+    return {
+        'product_name': product_name,
+        'seller': seller,
+        'cid': cid,
+    }
+
+def extract_share_url(driver):
+    share_url = ""
+    try:
+        share_button = WebDriverWait(driver, PANEL_WAIT_SECONDS).until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                "//div[contains(@class,'RSNrZe') and @role='button' and @aria-label='Share']"
+            ))
+        )
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", share_button)
+        share_button.click()
+
+        share_dialog = WebDriverWait(driver, PANEL_WAIT_SECONDS).until(
+            EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog' and @aria-label='Share']"))
+        )
+
+        try:
+            share_input = share_dialog.find_element(By.CSS_SELECTOR, "input[aria-label='Share link'][type='url']")
+            share_url = (share_input.get_attribute("value") or "").strip()
+        except Exception:
+            share_url = ""
+
+        if not share_url:
+            try:
+                share_url = share_dialog.find_element(By.CSS_SELECTOR, "div[jsname='tQ9n1c']").text.strip()
+            except Exception:
+                share_url = ""
+
+        try:
+            close_button = share_dialog.find_element(By.CSS_SELECTOR, "[jsname='tqp7ud']")
+            close_button.click()
+        except Exception:
+            try:
+                ActionChains(driver).send_keys(u'\ue00c').perform()  # ESC
+            except Exception:
+                pass
+    except Exception:
+        share_url = ""
+    return share_url
+
+def expand_more_stores(driver):
+    clicks = 0
+    while clicks < 2:
+        try:
+            more_stores = WebDriverWait(driver, 3).until(
+                EC.element_to_be_clickable((By.XPATH, "//div[contains(@class,'duf-h')]//div[@role='button']"))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", more_stores)
+            more_stores.click()
+            time.sleep(random.uniform(1.5, 2.5))
+            clicks += 1
+        except Exception:
+            break
+
+def populate_offers_for_selected_product(driver, result, product_id, osb_url):
+    result['competitors'] = []
+    result['product_url'] = extract_share_url(driver) or driver.current_url
+
+    expand_more_stores(driver)
+
+    last_error = None
+    offers_grid = None
+    for offer_attempt in range(OFFERS_RETRIES):
+        try:
+            offers_grid = WebDriverWait(driver, OFFERS_WAIT_SECONDS).until(
+                EC.presence_of_element_located((By.XPATH, "//div[@jsname='RSFNod' and @data-attrid='organic_offers_grid']"))
+            )
+            break
+        except Exception as exc:
+            last_error = exc
+            if offer_attempt + 1 < OFFERS_RETRIES:
+                time.sleep(1)
+
+    if offers_grid is None:
+        raise last_error or Exception("Offers grid not found")
+
+    exists = len(driver.find_elements(
+        By.XPATH,
+        "//div[contains(@class,'iI1aN')]//div[@class='EDblX kjqWgb']"
+    )) > 0
+
+    if exists > 0:
+        result['options'] = get_product_options(driver)
+
+    offer_elements = offers_grid.find_elements(By.CLASS_NAME, 'R5K7Cb')
+    print(f"Found {len(offer_elements)} offers")
+
+    competitors = []
+    for seller_html in offer_elements:
+        try:
+            store_name = seller_html.find_element(By.CSS_SELECTOR, "div.hP4iBf.gUf0b.uWvFpd").text.strip()
+        except Exception:
+            store_name = "N/A"
+
+        try:
+            seller_product_name = seller_html.find_element(By.CSS_SELECTOR, "div.Rp8BL").text.strip()
+        except Exception:
+            seller_product_name = "N/A"
+
+        try:
+            seller_url = seller_html.find_element(By.CSS_SELECTOR, "a.P9159d").get_attribute('href')
+        except Exception:
+            seller_url = "N/A"
+
+        try:
+            seller_price_element = seller_html.find_element(By.CSS_SELECTOR, "div.QcEgce span[aria-hidden='true']")
+            seller_price = seller_price_element.text.strip()
+        except Exception:
+            try:
+                seller_price_element = seller_html.find_element(By.CSS_SELECTOR, "div.GBgquf span")
+                seller_price = seller_price_element.text.strip()
+            except Exception:
+                seller_price = "N/A"
+
+        competitor_data = {
+            'product_id': product_id,
+            'seller': store_name,
+            'seller_product_name': seller_product_name,
+            'seller_url': seller_url,
+            'seller_price': seller_price,
+            'last_fetched_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        competitors.append(competitor_data)
+        result['competitors'].append(competitor_data)
+
+    search_seller = '1StopBedrooms'
+    sellers = [c['seller'] for c in competitors]
+    osb_position = 0
+    seller_count = len(sellers)
+    osb_id = ''
+    osb_url_match = False
+
+    if search_seller in sellers:
+        osb_position = sellers.index(search_seller) + 1
+        for competitor in competitors:
+            if competitor['seller'] == search_seller:
+                seller_slug = normalize_url_path_slug(competitor.get('seller_url', ''))
+                osb_id = seller_slug
+                target_slug = normalize_url_path_slug(osb_url)
+                if seller_slug and target_slug:
+                    osb_url_match = seller_slug == target_slug
+                break
+
+    result.update({
+        'osb_position': osb_position,
+        'seller_count': seller_count,
+        'osb_id': osb_id,
+        'status': 'completed',
+        'osb_url_match': f'{"Yes" if osb_url_match else "No"}',
+        'last_response': f'Completed - OSB Position: {osb_position}, Total Sellers: {seller_count}'
+    })
+    return result
+
+def try_click_product(driver, cid):
+    last_error = None
+    for click_attempt in range(PRODUCT_CLICK_RETRIES):
+        try:
+            element = WebDriverWait(driver, PANEL_WAIT_SECONDS).until(
+                EC.element_to_be_clickable((By.XPATH, f'//div[@id="{cid}"]'))
+            )
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
+            time.sleep(0.8)
+            try:
+                element.click()
+            except Exception:
+                driver.execute_script("arguments[0].click();", element)
+            WebDriverWait(driver, PANEL_WAIT_SECONDS).until(
+                lambda d: (
+                    len(d.find_elements(By.XPATH, "//div[contains(@class,'RSNrZe') and @role='button' and @aria-label='Share']")) > 0
+                    or len(d.find_elements(By.XPATH, "//div[@jsname='RSFNod' and @data-attrid='organic_offers_grid']")) > 0
+                )
+            )
+            time.sleep(random.uniform(0.8, 1.5))
+            return True
+        except Exception as exc:
+            last_error = exc
+            time.sleep(1)
+    raise last_error or Exception("Product click failed")
+
+def attempt_selected_product(driver, base_result, product_meta, osb_url):
+    attempt_result = dict(base_result)
+    attempt_result['competitors'] = []
+    attempt_result.update({
+        'product_name': product_meta.get('product_name', ''),
+        'seller': product_meta.get('seller', ''),
+        'cid': product_meta.get('cid', ''),
+        'pid': '',
+        'status': 'product_found',
+    })
+
+    if not attempt_result['cid']:
+        attempt_result['status'] = 'product_not_clickable'
+        attempt_result['last_response'] = 'Missing product CID'
+        return attempt_result
+
+    try:
+        try_click_product(driver, attempt_result['cid'])
+        attempt_result['last_response'] = "Clicked on product successfully"
+    except Exception as exc:
+        attempt_result['status'] = 'product_not_clickable'
+        attempt_result['last_response'] = f'Could not click product element: {str(exc)}'
+        return attempt_result
+
+    try:
+        return populate_offers_for_selected_product(driver, attempt_result, base_result['product_id'], osb_url)
+    except Exception as exc:
+        attempt_result['status'] = 'no_offers_found'
+        attempt_result['last_response'] = f'No offers found: {str(exc)}'
+        return attempt_result
+
+def run_product_selection_phase(driver, product_id, phase_name, search_url, base_result, osb_url, fallback_first=False):
+    log_matching(product_id, f"{phase_name} started")
+    driver.get(search_url)
+    wait_for_product_container(driver, timeout=10)
+    time.sleep(random.uniform(1.5, 2.5))
+
+    products = get_visible_product_cards(driver)
+    if not products:
+        phase_result = dict(base_result)
+        phase_result['url'] = search_url
+        phase_result['status'] = 'no_products'
+        phase_result['last_response'] = 'No products found in container'
+        return phase_result, False
+
+    limit = min(MAX_PRODUCT_TRIES, len(products))
+    log_matching(product_id, f"Found {len(products)} products -> trying {limit if len(products) >= MAX_PRODUCT_TRIES else 'all'}")
+
+    matching_products = []
+    for product in products:
+        meta = extract_product_card_meta(product)
+        if fallback_first or product_matches_keyword(meta.get('product_name', ''), base_result['keyword']):
+            matching_products.append(meta)
+
+    if fallback_first:
+        matching_products = matching_products[:1]
+    else:
+        matching_products = matching_products[:limit]
+
+    if not matching_products:
+        phase_result = dict(base_result)
+        phase_result['url'] = search_url
+        phase_result['status'] = 'no_match'
+        phase_result['last_response'] = 'No matching product found'
+        return phase_result, False
+
+    fallback_result = None
+    for index, product_meta in enumerate(matching_products, start=1):
+        log_matching(product_id, f"Trying product {index}")
+        attempt_result = attempt_selected_product(driver, base_result, product_meta, osb_url)
+        attempt_result['url'] = search_url
+
+        if fallback_result is None:
+            fallback_result = attempt_result
+
+        if attempt_result.get('osb_position', 0) <= 0:
+            log_matching(product_id, "OSB seller not present")
+        elif attempt_result.get('osb_url_match') == 'Yes':
+            log_matching(product_id, "OSB URL MATCHED -> stopping")
+            return attempt_result, True
+        else:
+            log_matching(product_id, "OSB URL mismatch")
+
+        if index < len(matching_products):
+            try:
+                driver.back()
+                wait_for_product_container(driver, timeout=10)
+                time.sleep(random.uniform(1.0, 2.0))
+            except Exception:
+                driver.get(search_url)
+                wait_for_product_container(driver, timeout=10)
+                time.sleep(random.uniform(1.0, 2.0))
+
+    return fallback_result or dict(base_result), False
+
 def scrape_product(driver, product_id, keyword, url, osb_url=""):
     """Scrape individual product from Google Shopping"""
     try:
@@ -497,224 +841,31 @@ def scrape_product(driver, product_id, keyword, url, osb_url=""):
             'competitors': []
         }
         
-        # Try to find product container
         try:
-            mains = driver.find_element(By.CLASS_NAME, "dURPMd")
-            result['last_response'] = "Product container found"
-            result['status'] = "found"
-        except Exception as e:
-            result['last_response'] = f"Product container not found: {str(e)[:20]}..."
-            result['status'] = "container_not_found"
-            return result
-        
-        # Find products in container
-        products = mains.find_elements(By.CLASS_NAME, 'MtXiu')
-        if not products:
-            result['last_response'] = "No products found in container"
-            result['status'] = "no_products"
-            return result
-        
-        # Process first matching product
-        for product in products:
-            try:
-                product_name = product.find_element(By.XPATH, ".//div[contains(@class,'gkQHve')]").text
-            except:
-                product_name = ""
-            
-            try:
-                seller = product.find_element(By.XPATH, ".//span[contains(@class,'WJMUdc')]").text
-            except:
-                seller = ""
-            
-            try:
-                cid = product.get_attribute('id')
-            except:
-                cid = ""
-            
-            # Normalize keyword: remove "set of" (case-insensitive) before comparison
-            normalized_keyword = re.sub(r'\bset\s+of\b', '', keyword or '', flags=re.IGNORECASE)
-            normalized_product_name = re.sub(r'\bset\s+of\b', '', product_name or '', flags=re.IGNORECASE)
+            phase_result, matched = run_product_selection_phase(
+                driver, product_id, "Original search", url, result, osb_url
+            )
+            if matched:
+                return phase_result
 
-            def has_set_word(text):
-                return bool(re.search(r'\bset\b', text or '', flags=re.IGNORECASE))
-
-            # Check for Set keyword mismatch (exact word match, case-insensitive)
-            if has_set_word(normalized_product_name) != has_set_word(normalized_keyword):
-                continue
-            
-            result.update({
-                'product_name': product_name,
-                'seller': seller,
-                'cid': cid,
-                'pid': '',
-                'status': 'product_found'
-            })
-            break
-        
-        if not result['product_name']:
-            result['last_response'] = "No matching product found"
-            result['status'] = "no_match"
-            return result
-        
-        # Click on product if CID exists
-        if result['cid']:
-            try:
-                element = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, f'//div[@id="{result["cid"]}"]'))
+            retry_url = build_retry_search_url(url)
+            if retry_url != url:
+                log_matching(product_id, "Retry search without 1stopbedrooms prefix")
+                phase_result, matched = run_product_selection_phase(
+                    driver, product_id, "Retry search", retry_url, result, osb_url
                 )
-                if element:
-                    driver.execute_script("arguments[0].scrollIntoView(true);", element)
-                    time.sleep(1)
-                    element.click()
-                    result['last_response'] = "Clicked on product successfully"
-                    time.sleep(random.uniform(1, 3))
-            except:
-                result['last_response'] = "Could not click product element"
-        
-        # Prefer the stable Google "Share link" URL from the right panel.
-        share_url = ""
-        try:
-            share_button = WebDriverWait(driver, 8).until(
-                EC.element_to_be_clickable((
-                    By.XPATH,
-                    "//div[contains(@class,'RSNrZe') and @role='button' and @aria-label='Share']"
-                ))
+                if matched:
+                    return phase_result
+
+            log_matching(product_id, "Fallback -> using first product from original search")
+            fallback_result, _ = run_product_selection_phase(
+                driver, product_id, "Fallback", url, result, osb_url, fallback_first=True
             )
-            driver.execute_script("arguments[0].scrollIntoView({block:'center'});", share_button)
-            share_button.click()
-
-            share_dialog = WebDriverWait(driver, 8).until(
-                EC.visibility_of_element_located((By.XPATH, "//div[@role='dialog' and @aria-label='Share']"))
-            )
-
-            try:
-                share_input = share_dialog.find_element(By.CSS_SELECTOR, "input[aria-label='Share link'][type='url']")
-                share_url = (share_input.get_attribute("value") or "").strip()
-            except:
-                share_url = ""
-
-            if not share_url:
-                try:
-                    share_url = share_dialog.find_element(By.CSS_SELECTOR, "div[jsname='tQ9n1c']").text.strip()
-                except:
-                    share_url = ""
-
-            # Close share dialog so it doesn't block following actions.
-            try:
-                close_button = share_dialog.find_element(By.CSS_SELECTOR, "[jsname='tqp7ud']")
-                close_button.click()
-            except:
-                try:
-                    ActionChains(driver).send_keys(u'\ue00c').perform()  # ESC
-                except:
-                    pass
-        except:
-            share_url = ""
-        result['product_url'] = share_url or driver.current_url
-        
-        # Try to get more stores
-        i = 0
-        while i < 2:
-            try:
-                more_stores = WebDriverWait(driver, 10).until(
-                    EC.element_to_be_clickable((By.XPATH, "//div[contains(@class,'duf-h')]//div[@role='button']"))
-                )
-                more_stores.click()
-                time.sleep(random.uniform(2, 4))
-                i += 1
-            except:
-                break
-        
-        # Try to find offers grid
-        try:
-            offers_grid = WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//div[@jsname='RSFNod' and @data-attrid='organic_offers_grid']"))
-            )
-            
-            exists = len(driver.find_elements(
-                By.XPATH,
-                "//div[contains(@class,'iI1aN')]//div[@class='EDblX kjqWgb']"
-            )) > 0
-            
-            if exists > 0:
-                product_options = get_product_options(driver)
-                result['options'] = product_options
-            
-            offer_elements = offers_grid.find_elements(By.CLASS_NAME, 'R5K7Cb')
-            print(f"Found {len(offer_elements)} offers")
-            
-            competitors = []
-            for seller_html in offer_elements:
-                try:
-                    store_name = seller_html.find_element(By.CSS_SELECTOR, "div.hP4iBf.gUf0b.uWvFpd").text.strip()
-                except:
-                    store_name = "N/A"
-                
-                try:
-                    seller_product_name = seller_html.find_element(By.CSS_SELECTOR, "div.Rp8BL").text.strip()
-                except:
-                    seller_product_name = "N/A"
-                
-                try:
-                    seller_url = seller_html.find_element(By.CSS_SELECTOR, "a.P9159d").get_attribute('href')
-                except:
-                    seller_url = "N/A"
-                
-                try:
-                    seller_price_element = seller_html.find_element(By.CSS_SELECTOR, "div.QcEgce span[aria-hidden='true']")
-                    seller_price = seller_price_element.text.strip()
-                except:
-                    try:
-                        seller_price_element = seller_html.find_element(By.CSS_SELECTOR, "div.GBgquf span")
-                        seller_price = seller_price_element.text.strip()
-                    except:
-                        seller_price = "N/A"
-                
-                competitor_data = {
-                    'product_id': product_id,
-                    'seller': store_name,
-                    'seller_product_name': seller_product_name,
-                    'seller_url': seller_url,
-                    'seller_price': seller_price,
-                    'last_fetched_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                
-                competitors.append(competitor_data)
-                result['competitors'].append(competitor_data)
-            
-            # Calculate OSB position
-            search_seller = '1StopBedrooms'
-            sellers = [c['seller'] for c in competitors]
-            osb_position = 0
-            seller_count = len(sellers)
-            osb_id = ''
-            osb_url_match = False
-            
-            if search_seller in sellers:
-                osb_position = sellers.index(search_seller) + 1
-                for competitor in competitors:
-                    if competitor['seller'] == search_seller:
-                        seller_slug = normalize_url_path_slug(competitor.get('seller_url', ''))
-                        osb_id = seller_slug
-                        target_slug = normalize_url_path_slug(osb_url)
-                        if seller_slug and target_slug:
-                            osb_url_match = seller_slug == target_slug
-                        break
-            
-            result.update({
-                'osb_position': osb_position,
-                'seller_count': seller_count,
-                'osb_id': osb_id,
-                'status': 'completed',
-                'osb_url_match': f'{"Yes" if osb_url_match else "No"}',
-                'last_response': f'Completed - OSB Position: {osb_position}, Total Sellers: {seller_count}'
-            })
-            
+            return fallback_result
         except Exception as e:
-            result['status'] = 'no_offers_found'
-            result['last_response'] = f'No offers found: {str(e)}'
-        
-        return result
+            result['last_response'] = f"Product selection failed: {str(e)}"
+            result['status'] = "selection_error"
+            return result
         
     except Exception as e:
         print(f"Error scraping product {product_id}: {str(e)}")
