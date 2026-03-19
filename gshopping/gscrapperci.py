@@ -44,6 +44,7 @@ PRODUCT_FINAL_COLUMNS = [
     "osb_id",
     "seller_count",
     "status",
+    "product_about_info"  # ← ADD THIS LINE
 ]
 # Import the existing captcha solving functions
 try:
@@ -157,7 +158,8 @@ def build_error_result(product_id, keyword, url, message, status="error"):
         'osb_position': 0,
         'osb_id': '',
         'seller_count': 0,
-        'competitors': []
+        'competitors': [],
+        'product_about_info': json.dumps({})
     }
 
 def save_remaining_df(df, chunk_id, round_id, output_dir, reason=None):
@@ -427,6 +429,91 @@ def get_product_options(driver):
     
     return json.dumps(scraped_data, indent=2)
 
+def get_product_about_info(driver):
+    """
+    Extract the 'About this product' section including description and attributes.
+    Expands the "More details" button if needed to get all data.
+    Returns a JSON string with description and attributes.
+    """
+    product_info = {
+        'description': '',
+        'attributes': {}
+    }
+    
+    try:
+        print("Extracting 'About this product' information...")
+        
+        # Find the About this product section
+        about_section = None
+        try:
+            about_section = driver.find_element(By.XPATH, "//div[@jsname='HhYL2b']")
+        except:
+            try:
+                about_section = driver.find_element(By.XPATH, "//h3[contains(text(),'About this product')]/ancestor::div[1]")
+            except:
+                print("Could not find 'About this product' section")
+                return json.dumps(product_info)
+        
+        # Extract description
+        try:
+            desc_element = about_section.find_element(By.XPATH, ".//div[@jsname='yKDmZd']")
+            product_info['description'] = desc_element.text.strip()
+        except:
+            try:
+                desc_element = about_section.find_element(By.XPATH, ".//div[contains(@class,'iERlS')]")
+                product_info['description'] = desc_element.text.strip()
+            except:
+                pass
+        
+        # Check if "More details" button exists and click it
+        try:
+            # Look for collapsed state first
+            more_button = about_section.find_element(By.XPATH, ".//div[@role='button' and contains(., 'More details')]")
+            
+            # Check if it's the collapsed version (aria-expanded="false")
+            aria_expanded = more_button.get_attribute('aria-expanded')
+            
+            if aria_expanded == 'false' or not aria_expanded:
+                print("Clicking 'More details' button to expand attributes...")
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", more_button)
+                time.sleep(1)
+                more_button.click()
+                time.sleep(2)  # Wait for expansion
+        except:
+            print("No 'More details' button found or already expanded")
+        
+        # Extract all attributes
+        try:
+            # Find all attribute rows
+            attribute_rows = about_section.find_elements(By.XPATH, ".//div[@role='row' and contains(@class,'YU1Fsb')]")
+            
+            for row in attribute_rows:
+                try:
+                    # Get attribute name
+                    name_element = row.find_element(By.XPATH, ".//div[contains(@class,'TCzUld')]")
+                    attr_name = name_element.text.strip()
+                    
+                    # Get attribute value
+                    value_element = row.find_element(By.XPATH, ".//div[contains(@class,'uAwmIf')]//div")
+                    attr_value = value_element.text.strip()
+                    
+                    if attr_name and attr_value:
+                        product_info['attributes'][attr_name] = attr_value
+                        
+                except Exception as e:
+                    continue
+                    
+        except Exception as e:
+            print(f"Error extracting attributes: {str(e)}")
+        
+        print(f"Extracted {len(product_info['attributes'])} attributes")
+        
+    except Exception as e:
+        print(f"Error in get_product_about_info: {str(e)}")
+    
+    return json.dumps(product_info)
+
+
 def normalize_url_path_slug(raw_url):
     """Return normalized last path segment (slug), removing query/fragment."""
     try:
@@ -599,6 +686,14 @@ def populate_offers_for_selected_product(driver, result, product_id, osb_url):
 
     if exists > 0:
         result['options'] = get_product_options(driver)
+
+    # ★ NEW: Add product about info scraping
+    try:
+        result['product_about_info'] = get_product_about_info(driver)
+        print("✓ Product about info extracted")
+    except Exception as e:
+        print(f"Error extracting product about info: {str(e)}")
+        result['product_about_info'] = json.dumps({'description': '', 'attributes': {}})
 
     offer_elements = offers_grid.find_elements(By.CLASS_NAME, 'R5K7Cb')
     print(f"Found {len(offer_elements)} offers")
@@ -817,7 +912,8 @@ def scrape_product(driver, product_id, keyword, url, osb_url=""):
                 'osb_position': 0,  # ADD THIS LINE
                 'osb_id': '',  # ADD THIS LINE
                 'seller_count': 0,  # ADD THIS LINE
-                'competitors': []  # Already present
+                'competitors': [],  # Already present
+                'product_about_info': json.dumps({})  # ← ADD THIS LINE
             }
         
         time.sleep(random.uniform(4, 8))
@@ -838,7 +934,8 @@ def scrape_product(driver, product_id, keyword, url, osb_url=""):
             'osb_id': '',
             'seller_count': 0,
             'status': '',
-            'competitors': []
+            'competitors': [],
+            'product_about_info': ''  # ← ADD THIS LINE
         }
         
         try:
@@ -1096,9 +1193,9 @@ def process_chunk(chunk_file, chunk_id, total_chunks, round_id=1, output_dir='ou
                 'osb_position': result.get('osb_position', 0),
                 'osb_id': result.get('osb_id', ''),
                 'seller_count': result.get('seller_count', 0),
-                'status': result.get('status', 'error')
+                'status': result.get('status', 'error'),
+                'product_about_info': result.get('product_about_info', json.dumps({}))  # ← ADD THIS LINE
             }
-
             csv1_data.append(csv1_row)
         
         # Create CSV 2: Seller Information
