@@ -11,7 +11,7 @@ from selenium.webdriver.common.action_chains import ActionChains
 import time
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, WebDriverException, SessionNotCreatedException
+from selenium.common.exceptions import NoSuchElementException, WebDriverException, SessionNotCreatedException, StaleElementReferenceException
 import undetected_chromedriver as uc
 import csv
 import traceback
@@ -180,15 +180,22 @@ def detects_recaptcha(driver):
         if driver.find_elements(By.CLASS_NAME, "rc-imageselect-challenge"):
             print("Puzzle reCAPTCHA detected!")
             return True
-        elif driver.find_elements(By.TAG_NAME, "iframe"):
-            for iframe in driver.find_elements(By.TAG_NAME, "iframe"):
-                src = iframe.get_attribute("src")
-                if src and "recaptcha" in src:
-                    print("reCAPTCHA iframe detected!")
-                    return True
-        else:
-            print("No reCAPTCHA found.")
-            return False
+        iframe_sources = []
+        for iframe in driver.find_elements(By.TAG_NAME, "iframe"):
+            try:
+                iframe_sources.append((iframe.get_attribute("src") or "").lower())
+            except StaleElementReferenceException:
+                continue
+
+        if any("recaptcha" in src for src in iframe_sources):
+            print("reCAPTCHA iframe detected!")
+            return True
+
+        print("No reCAPTCHA found.")
+        return False
+    except StaleElementReferenceException:
+        print("reCAPTCHA check skipped due to transient stale iframe")
+        return False
     except Exception as e:
         print(f"Error detecting reCAPTCHA: {e}")
         return False
