@@ -16,49 +16,78 @@ from solvecaptcha import solve_recaptcha_audio
 import csv
 import traceback
 
+DRIVER_RESTART_THRESHOLD = 30
+
 def swipe_element(driver, element, start_x, start_y, end_x, end_y, duration=1000):
     driver.execute_script("arguments[0].scrollIntoView();", element)
     action = ActionChains(driver)
     action.move_to_element_with_offset(element, start_x, start_y).click_and_hold().pause(0.2)
     action.move_by_offset(end_x, end_y).release().perform()
 
-def setup_driver():
+def safe_click(driver, element):
+    try:
+        element.click()
+        return True
+    except Exception:
+        try:
+            driver.execute_script("arguments[0].click();", element)
+            return True
+        except Exception:
+            try:
+                ActionChains(driver).move_to_element(element).pause(0.5).click().perform()
+                return True
+            except Exception:
+                return False
+
+def setup_driver(max_attempts=3, base_delay=5):
     # if os.getenv("GITHUB_ACTIONS") != "true":
     #     os.system("pkill chrome")
-    time.sleep(2)
-    options = uc.ChromeOptions()
-    # if os.getenv("GITHUB_ACTIONS") == "true":
-    #     options.add_argument("--headless=new")
-    # options.add_argument("--headless=new")
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--disable-extensions")
-    options.add_argument("--disable-popup-blocking")
-    options.add_argument("--disable-logging")
-    options.add_argument("--log-level=3")
-    options.add_argument("--remote-debugging-port=9222")
-    options.add_argument("--disable-background-timer-throttling")
-    options.add_argument("--disable-backgrounding-occluded-windows")
-    options.add_argument("--disable-ipc-flooding-protection")
-    options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
-    options.add_argument("--disable-renderer-backgrounding")
+    last_error = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            time.sleep(2 if attempt == 1 else base_delay)
+            options = uc.ChromeOptions()
+            # if os.getenv("GITHUB_ACTIONS") == "true":
+            #     options.add_argument("--headless=new")
+            # options.add_argument("--headless=new")
+            options.add_argument("--start-maximized")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--disable-infobars")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-popup-blocking")
+            options.add_argument("--disable-logging")
+            options.add_argument("--log-level=3")
+            options.add_argument("--remote-debugging-port=9222")
+            options.add_argument("--disable-background-timer-throttling")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-ipc-flooding-protection")
+            options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+            options.add_argument("--disable-renderer-backgrounding")
 
-    user_agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
-    ]
-    options.add_argument(f"user-agent={random.choice(user_agents)}")
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/121.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/119.0.0.0 Safari/537.36",
+            ]
+            width = random.randint(1200, 1600)
+            height = random.randint(800, 1000)
 
-    # Let undetected_chromedriver auto-detect the correct version
-    driver = uc.Chrome(options=options)
-    
-    return driver
+            options.add_argument(f"--user-agent={random.choice(user_agents)}")
+            options.add_argument(f"--window-size={width},{height}")
+
+            # Let undetected_chromedriver auto-detect the correct version
+            return uc.Chrome(options=options)
+        except Exception as exc:
+            last_error = exc
+            print(f"Driver start failed (attempt {attempt}/{max_attempts}): {str(exc)}")
+            if attempt < max_attempts:
+                time.sleep(base_delay)
+
+    raise last_error
 
 def detects_recaptcha(driver):
     try:
@@ -309,13 +338,17 @@ def scrape_google_keyword_competitior(url, product_id, keyword, driver, all_resu
                 EC.element_to_be_clickable((By.XPATH, f'//div[@id="{cid}"]'))
             )
             if element:
-                driver.execute_script("arguments[0].scrollIntoView(true);", element)
-                time.sleep(1)
-                element.click()
+                driver.execute_script("window.scrollBy(0, -200)")
+                time.sleep(0.3)
+                driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
+                time.sleep(0.6)
+                clicked = safe_click(driver, element)
+                if not clicked:
+                    raise Exception("Safe click failed")
                 print(f"[{product_id}] Clicked on the element successfully")
             time.sleep(random.uniform(1, 3))
-        except:
-            print(f"[{product_id}] Could not click element")
+        except Exception as e:
+            print(f"[{product_id}] Could not click element: {str(e)}")
     
     productData['product_url'] = driver.current_url
     productData['status'] = 'clicked'
@@ -464,6 +497,7 @@ def main():
     }
     
     driver = setup_driver()
+    processed_count = 0
     
     for i, product in enumerate(products, 1):
         try:
@@ -485,6 +519,16 @@ def main():
             time.sleep(random.uniform(3, 6))
             
             driver = scrape_google_keyword_competitior(url, product_id, keyword, driver, all_results)
+            processed_count += 1
+
+            if processed_count % DRIVER_RESTART_THRESHOLD == 0:
+                print("Restarting driver to avoid detection / memory leak")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                time.sleep(random.uniform(3, 6))
+                driver = setup_driver(max_attempts=3, base_delay=5)
             
         except Exception as e:
             print(f"Error scraping product {product_id}: {str(e)}")
