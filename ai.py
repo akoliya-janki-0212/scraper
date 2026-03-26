@@ -1,22 +1,47 @@
 from fastapi import FastAPI
-from transformers import pipeline
+from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+import torch
 
-app = FastAPI()
+ai = FastAPI()
 
-print("Loading model...")
+pipe = None
 
-pipe = pipeline(
-    "text-generation",
-    model="sshleifer/tiny-gpt2"
-)
+@ai.on_event("startup")
+def load_model():
+    global pipe
 
-print("Model loaded")
+    model_id = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
-@app.get("/")
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        torch_dtype=torch.float32,
+        low_cpu_mem_usage=True
+    )
+
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer
+    )
+
+@ai.get("/")
 def health():
-    return {"status": "ok"}
+    return {"status": "tinyllama-ready"}
 
-@app.get("/gen")
-def generate(q: str):
-    out = pipe(q, max_length=50)
-    return {"text": out[0]["generated_text"]}
+@ai.get("/chat")
+def chat(q: str):
+
+    prompt = f"<|user|>\n{q}\n<|assistant|>\n"
+
+    out = pipe(
+        prompt,
+        max_new_tokens=120,
+        do_sample=True,
+        temperature=0.7,
+        top_p=0.9
+    )
+
+    text = out[0]["generated_text"].split("<|assistant|>")[-1]
+
+    return {"response": text.strip()}
