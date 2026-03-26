@@ -1,7 +1,9 @@
-name: Run API with Tunnel
+name: Run Model API
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
 
 jobs:
   run:
@@ -9,42 +11,31 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Install Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: 3.11
 
-      - name: Install dependencies
+      - name: Install deps
+        run: pip install fastapi uvicorn transformers torch
+
+      - name: Start API
         run: |
-          pip install fastapi uvicorn
-
-      - name: Start FastAPI server
-        run: |
-          nohup python -m uvicorn app:app --host 0.0.0.0 --port 8000 > api.log 2>&1 &
-          sleep 8
-
-          echo "===== API LOG ====="
-          cat api.log || true
-
-          echo "===== RUNNING PROCESS ====="
-          ps aux | grep uvicorn || true
-
-          echo "===== PORT STATUS ====="
-          ss -tulpn | grep 8000 || true
-
-          echo "===== CURL TEST ====="
-          curl -v http://localhost:8000 || true
+          nohup uvicorn ai:ai --host 0.0.0.0 --port 8000 &
 
       - name: Install cloudflared
         run: |
-          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-          chmod +x cloudflared-linux-amd64
+          wget https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
+          sudo chmod +x /usr/local/bin/cloudflared
 
-      - name: Start Cloudflare Tunnel
+      - name: Start tunnel
         run: |
-          echo "Starting tunnel..."
-          cloudflared tunnel --url http://localhost:8000
+          cloudflared tunnel --url http://localhost:8000 > tunnel.log 2>&1 &
+          sleep 10
+          cat tunnel.log
+
+      - name: Keep job alive
+        run: sleep 20000
