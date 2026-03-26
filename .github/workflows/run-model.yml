@@ -1,4 +1,4 @@
-name: Run AI API
+name: Run API with Tunnel
 
 on:
   workflow_dispatch:
@@ -12,40 +12,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Python setup
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: "3.11"
 
-      - name: Install deps
-        run: pip install fastapi uvicorn transformers torch
-
-      - name: Start FastAPI
+      - name: Install dependencies
         run: |
-          nohup uvicorn app:app --host 0.0.0.0 --port 8000 > api.log 2>&1 &
-          echo "Waiting API to start..."
+          pip install fastapi uvicorn
 
-          for i in {1..40}; do
-            sleep 5
-            if curl -s http://localhost:8000 > /dev/null; then
-              echo "API is ready"
-              break
-            fi
-          done
+      - name: Start FastAPI server
+        run: |
+          nohup python -m uvicorn app:app --host 0.0.0.0 --port 8000 > api.log 2>&1 &
+          sleep 8
 
-          echo "Running processes:"
-          ps aux | grep uvicorn
+          echo "===== API LOG ====="
+          cat api.log || true
 
-          echo "Open ports:"
-          ss -tulpn
+          echo "===== RUNNING PROCESS ====="
+          ps aux | grep uvicorn || true
 
-      - name: Install Cloudflare Tunnel
+          echo "===== PORT STATUS ====="
+          ss -tulpn | grep 8000 || true
+
+          echo "===== CURL TEST ====="
+          curl -v http://localhost:8000 || true
+
+      - name: Install cloudflared
         run: |
           wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
           chmod +x cloudflared-linux-amd64
           sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
 
-      - name: Start Tunnel
+      - name: Start Cloudflare Tunnel
         run: |
           echo "Starting tunnel..."
           cloudflared tunnel --url http://localhost:8000
