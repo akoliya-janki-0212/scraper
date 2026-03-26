@@ -19,7 +19,7 @@ jobs:
           python-version: 3.11
 
       - name: Install deps
-        run: pip install -r fastapi uvicorn transformers torch
+        run: pip install fastapi uvicorn transformers torch
 
       - name: Start API
         run: |
