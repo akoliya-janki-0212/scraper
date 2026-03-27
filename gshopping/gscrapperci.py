@@ -243,11 +243,11 @@ def setup_driver(max_attempts=3, base_delay=4):
             options.add_argument("--disable-notifications")
 
             driver_path = os.environ.get("CHROMEDRIVER_BIN")
-            if driver_path:
-                service = Service(driver_path)
-                driver = uc.Chrome(options=options, service=service)
-            else:
-                driver = uc.Chrome(options=options, version_main=146)
+            # if driver_path:
+            #     service = Service(driver_path)
+            #     driver = uc.Chrome(options=options, service=service)
+            # else:
+            driver = uc.Chrome(options=options, version_main=146)
             normalize_driver_fingerprint(driver)
             warm_google_session(driver)
             return driver
