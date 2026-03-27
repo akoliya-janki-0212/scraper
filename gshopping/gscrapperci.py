@@ -832,8 +832,16 @@ def attempt_selected_product(driver, base_result, product_meta, osb_url):
 def run_product_selection_phase(driver, product_id, phase_name, search_url, base_result, osb_url, fallback_first=False):
     log_matching(product_id, f"{phase_name} started")
     driver.get(search_url)
-    wait_for_product_container(driver, timeout=10)
-    time.sleep(random.uniform(1.5, 2.5))
+    try:
+        wait_for_product_container(driver, timeout=10)
+        time.sleep(random.uniform(1.5, 2.5))
+    except Exception as exc:
+        phase_result = dict(base_result)
+        phase_result['url'] = search_url
+        phase_result['status'] = 'no_products'
+        phase_result['last_response'] = f'No products found on page: {str(exc)}'
+        log_matching(product_id, f"{phase_name} no products on page")
+        return phase_result, False
 
     products = get_visible_product_cards(driver)
     if not products:
@@ -953,19 +961,25 @@ def scrape_product(driver, product_id, keyword, url, osb_url=""):
                 return phase_result
 
             retry_url = build_retry_search_url(url)
+            final_result = phase_result
             if retry_url != url:
                 log_matching(product_id, "Retry search without 1stopbedrooms prefix")
                 phase_result, matched = run_product_selection_phase(
                     driver, product_id, "Retry search", retry_url, result, osb_url
                 )
+                final_result = phase_result
                 if matched:
+                    return phase_result
+                if phase_result.get('status') == 'completed':
                     return phase_result
 
             log_matching(product_id, "Fallback -> using first product from original search")
             fallback_result, _ = run_product_selection_phase(
                 driver, product_id, "Fallback", url, result, osb_url, fallback_first=True
             )
-            return fallback_result
+            if fallback_result.get('status') in {'completed', 'product_found', 'product_not_clickable', 'no_offers_found'}:
+                return fallback_result
+            return final_result
         except Exception as e:
             result['last_response'] = f"Product selection failed: {str(e)}"
             result['status'] = "selection_error"
