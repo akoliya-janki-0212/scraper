@@ -113,7 +113,8 @@ jobs:
             fake-useragent==1.4.0 \
             python-dateutil==2.8.2 \
             psycopg2-binary==2.9.9 \
-            SQLAlchemy==2.0.25
+            SQLAlchemy==2.0.25 \
+            python-dotenv
 
       - name: Run scraper chunk directly to Postgres
         env:
@@ -150,7 +151,7 @@ jobs:
 
       - name: Install database and reporting dependencies
         run: |
-          pip install psycopg2-binary pandas
+          pip install psycopg2-binary pandas python-dotenv
 
       - name: Check if there are pending products in DB
         id: check_rem

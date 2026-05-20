@@ -2,20 +2,15 @@ import sys
 import json
 import random
 import os
-from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
-
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.action_chains import ActionChains
 import time
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, WebDriverException, SessionNotCreatedException, StaleElementReferenceException, TimeoutException
-import undetected_chromedriver as uc
+from datetime import datetime
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 import csv
 import traceback
 import pandas as pd
@@ -23,10 +18,23 @@ import argparse
 import re
 import shutil
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
-from selenium.webdriver.common.keys import Keys
 import psycopg2
 from psycopg2.extras import execute_values
 import ftplib
+
+try:
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.chrome.options import Options
+    from selenium.webdriver.chrome.service import Service
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+    from selenium.common.exceptions import NoSuchElementException, WebDriverException, SessionNotCreatedException, StaleElementReferenceException, TimeoutException
+    import undetected_chromedriver as uc
+    from selenium.webdriver.common.keys import Keys
+except ImportError:
+    # Selenium/Chrome dependencies are optional for non-scraping tasks like report exporting
+    pass
 
 CLAIM_STATUS = "claimed"
 PENDING_STATUS = "pending"
