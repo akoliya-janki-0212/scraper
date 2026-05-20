@@ -546,6 +546,94 @@ def get_pending_chunk_from_db(limit, offset):
         print(f"Error fetching pending chunk from DB: {e}")
         return pd.DataFrame()
 
+def verify_and_claim_product(product_id, worker_id=None, ttl_minutes=60):
+    """
+    Verify that a product is still available or claimed by us, and atomically claim/renew it.
+    Returns True if we successfully claimed/renewed it and can scrape it.
+    Returns False if it is completed, failed, or claimed by someone else.
+    """
+    try:
+        pg_host = os.environ.get("PG_HOST")
+        pg_port = os.environ.get("PG_PORT", "5432")
+        pg_user = os.environ.get("PG_USER")
+        pg_pass = os.environ.get("PG_PASS")
+        pg_db = os.environ.get("PG_DB")
+
+        if not all([pg_host, pg_user, pg_pass, pg_db]):
+            # Standalone mode: assume it is safe to scrape
+            return True
+
+        worker_id = _get_worker_id(worker_id)
+        conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_pass, dbname=pg_db)
+        cursor = conn.cursor()
+
+        # Check if the schema supports claims columns
+        cursor.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = 'products_to_scrape'
+              AND column_name IN ('claimed_by', 'claimed_at')
+            GROUP BY table_name
+            HAVING COUNT(*) = 2
+            """
+        )
+        supports_claims = cursor.fetchone() is not None
+
+        if not supports_claims:
+            # Fallback simple check/claim
+            cursor.execute(
+                "SELECT scraping_status FROM products_to_scrape WHERE product_id = %s",
+                (str(product_id),)
+            )
+            row = cursor.fetchone()
+            if not row:
+                cursor.close()
+                conn.close()
+                return False
+            status = row[0]
+            if status != PENDING_STATUS:
+                cursor.close()
+                conn.close()
+                return False
+            
+            # Atomically set to claimed
+            cursor.execute(
+                "UPDATE products_to_scrape SET scraping_status = %s, last_attempt = NOW() WHERE product_id = %s AND scraping_status = %s",
+                (CLAIM_STATUS, str(product_id), PENDING_STATUS)
+            )
+            claimed = cursor.rowcount > 0
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return claimed
+
+        # With claims support, atomically claim or renew our claim
+        cursor.execute(
+            """
+            UPDATE products_to_scrape
+            SET scraping_status = %s,
+                claimed_by = %s,
+                claimed_at = NOW(),
+                last_attempt = NOW()
+            WHERE product_id = %s
+              AND (
+                  scraping_status = %s
+                  OR (scraping_status = %s AND claimed_by = %s)
+                  OR (scraping_status = %s AND claimed_at < (NOW() - (%s || ' minutes')::interval))
+              )
+            """,
+            (CLAIM_STATUS, worker_id, str(product_id), PENDING_STATUS, CLAIM_STATUS, worker_id, CLAIM_STATUS, int(ttl_minutes))
+        )
+        claimed = cursor.rowcount > 0
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return claimed
+    except Exception as e:
+        print(f"Error verifying/claiming product {product_id} in DB: {e}")
+        return True
+
 def update_product_status(product_id, scraping_status, error_message=None):
     """Update the scraping_status of a product in the products_to_scrape table."""
     try:
@@ -2151,7 +2239,7 @@ def split_dataframe_to_chunk_files(df, output_dir, total_chunks, prefix):
     return chunk_files
 
 
-def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output'):
+def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', worker_id=None, ttl_minutes=60):
     """Process a chunk of products"""
     try:
         if df is None or df.empty:
@@ -2167,6 +2255,7 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output'):
             }
         df = df.reset_index(drop=True)
         consecutive_timeouts = 0
+        resolved_worker_id = _get_worker_id(worker_id)
 
         print(f"Processing {len(df)} products from chunk {chunk_id}")
         
@@ -2212,6 +2301,11 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output'):
                 cat = row['category']
                 
                 print(f"\nProcessing {index+1}/{len(df)}: Product ID {product_id}")
+                
+                # Check database status and claim the product atomically before scraping
+                if not verify_and_claim_product(product_id, resolved_worker_id, ttl_minutes):
+                    print(f"Skipping product {product_id} - already claimed/completed by another worker.")
+                    continue
                 
                 # Scrape product
                 try:
@@ -2454,7 +2548,7 @@ def main():
         if chunk_df.empty:
             print("No claimable pending products found (or claim columns missing).")
             sys.exit(0)
-        chunk_result = process_chunk(chunk_df, 1, 1)
+        chunk_result = process_chunk(chunk_df, 1, 1, worker_id=args.worker_id, ttl_minutes=args.claim_ttl_minutes)
         success = chunk_result.get("success", False)
         sys.exit(0 if success else 1)
 
@@ -2483,7 +2577,7 @@ def main():
         print(f"Chunk {args.chunk_id} has no products to process.")
         sys.exit(0)
 
-    chunk_result = process_chunk(chunk_df, args.chunk_id, args.total_chunks)
+    chunk_result = process_chunk(chunk_df, args.chunk_id, args.total_chunks, worker_id=args.worker_id, ttl_minutes=args.claim_ttl_minutes)
     success = chunk_result.get("success", False)
     
     if success:
