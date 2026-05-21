@@ -9,9 +9,24 @@ on:
         default: ""
         type: string
       total_chunks:
-        description: "Number of chunks per round"
+        description: "Parallel workers to run in this account"
         required: true
-        default: "250"
+        default: "20"
+        type: string
+      products_per_hour:
+        description: "Expected products per worker per hour"
+        required: true
+        default: "35"
+        type: string
+      max_runtime_hours:
+        description: "Maximum hours per worker"
+        required: true
+        default: "6"
+        type: string
+      claim_limit:
+        description: "Products claimed per worker (blank = products_per_hour * max_runtime_hours)"
+        required: false
+        default: ""
         type: string
       run_depth:
         description: "Current recursive run depth"
@@ -40,7 +55,7 @@ jobs:
 
           MATRIX="["
           for ((i=1;i<=TOTAL_CHUNKS;i++)); do
-            MATRIX+="{\"chunk_id\":$i},"
+            MATRIX+="{\"worker_index\":$i},"
           done
           MATRIX="${MATRIX%,}]"
 
@@ -116,7 +131,7 @@ jobs:
             SQLAlchemy==2.0.25 \
             python-dotenv
 
-      - name: Run scraper chunk directly to Postgres
+      - name: Run scraper worker directly to Postgres
         env:
           DISPLAY: :99
           FTP_HOST: ${{ secrets.FTP_HOST }}
@@ -128,15 +143,21 @@ jobs:
           PG_USER: ${{ secrets.PG_USER }}
           PG_PASS: ${{ secrets.PG_PASS }}
           PG_DB: ${{ secrets.PG_DB }}
+          PRODUCTS_PER_HOUR: ${{ github.event.inputs.products_per_hour || '35' }}
+          MAX_RUNTIME_HOURS: ${{ github.event.inputs.max_runtime_hours || '6' }}
+          CLAIM_LIMIT: ${{ github.event.inputs.claim_limit }}
+          SCRAPER_WORKER_ID: gshopping-pg-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.worker_index }}
         run: |
           Xvfb :99 -screen 0 1920x1080x24 &
           sleep 3
 
-          TOTAL_CHUNKS="${{ github.event.inputs.total_chunks || 20 }}"
+          TOTAL_WORKERS="${{ github.event.inputs.total_chunks || 20 }}"
 
           python -u gshopping/gscraper_pg.py \
-            --chunk-id ${{ matrix.chunk_id }} \
-            --total-chunks "$TOTAL_CHUNKS"
+            --chunk-id ${{ matrix.worker_index }} \
+            --total-chunks "$TOTAL_WORKERS" \
+            --products-per-hour "$PRODUCTS_PER_HOUR" \
+            --max-runtime-hours "$MAX_RUNTIME_HOURS"
 
   dispatch_next_round:
     needs: scrape
@@ -175,7 +196,7 @@ jobs:
               
               conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_user, password=pg_pass, dbname=pg_db)
               cursor = conn.cursor()
-              cursor.execute("SELECT COUNT(*) FROM products_to_scrape WHERE scraping_status = 'pending' AND status = 1")
+              cursor.execute("SELECT COUNT(*) FROM osb_products WHERE scraping_status = 'pending' AND status = 1")
               pending_count = cursor.fetchone()[0]
               cursor.close()
               conn.close()
@@ -201,8 +222,11 @@ jobs:
           script: |
             const runDepth = Number('${{ github.event.inputs.run_depth || '1' }}');
             const nextDepth = runDepth + 1;
-            const totalChunks = '${{ github.event.inputs.total_chunks || '250' }}';
+            const totalChunks = '${{ github.event.inputs.total_chunks || '20' }}';
             const maxDepth = '${{ github.event.inputs.max_depth || '50' }}';
+            const productsPerHour = '${{ github.event.inputs.products_per_hour || '35' }}';
+            const maxRuntimeHours = '${{ github.event.inputs.max_runtime_hours || '6' }}';
+            const claimLimit = '${{ github.event.inputs.claim_limit }}';
 
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
@@ -211,6 +235,9 @@ jobs:
               ref: 'refs/heads/main',
               inputs: {
                 total_chunks: totalChunks,
+                products_per_hour: productsPerHour,
+                max_runtime_hours: maxRuntimeHours,
+                claim_limit: claimLimit,
                 run_depth: String(nextDepth),
                 max_depth: maxDepth
               },

@@ -17,6 +17,7 @@ import pandas as pd
 import argparse
 import re
 import shutil
+import math
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 import psycopg2
 from psycopg2.extras import execute_values
@@ -38,6 +39,9 @@ except ImportError:
 
 CLAIM_STATUS = "claimed"
 PENDING_STATUS = "pending"
+DEFAULT_PRODUCTS_PER_HOUR = 35
+DEFAULT_MAX_RUNTIME_HOURS = 6
+DEFAULT_CLAIM_TTL_MINUTES = 480
 
 def upload_to_ftp(ftp_host, ftp_user, ftp_pass, ftp_path, local_file, remote_filename):
     """Upload a file to the FTP server securely."""
@@ -738,6 +742,29 @@ def _get_worker_id(explicit_worker_id=None):
             return f"{key}:{val}"
     return f"pid:{os.getpid()}"
 
+def _env_int(name, default):
+    val = os.environ.get(name)
+    if val is None or str(val).strip() == "":
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+def _env_float(name, default):
+    val = os.environ.get(name)
+    if val is None or str(val).strip() == "":
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
+
+def calculate_parallel_claim_limit(claim_limit=None, products_per_hour=DEFAULT_PRODUCTS_PER_HOUR, max_runtime_hours=DEFAULT_MAX_RUNTIME_HOURS):
+    if claim_limit is not None and int(claim_limit) > 0:
+        return int(claim_limit)
+    return max(1, int(math.ceil(float(products_per_hour) * float(max_runtime_hours))))
+
 def release_expired_claims(ttl_minutes=60):
     """Release old claims so another runner can pick them up."""
     try:
@@ -971,6 +998,40 @@ def update_product_status(product_id, scraping_status, error_message=None):
         conn.close()
     except Exception as e:
         print(f"Error updating status for {product_id}: {e}")
+
+def release_claimed_products(product_ids, worker_id=None, reason="not_processed"):
+    """Return unprocessed rows claimed by this worker to the pending queue."""
+    product_ids = [str(pid).strip() for pid in product_ids if str(pid).strip()]
+    if not product_ids:
+        return 0
+
+    try:
+        resolved_worker_id = _get_worker_id(worker_id)
+        conn = _get_pg_conn()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE osb_products
+            SET scraping_status = %s,
+                claimed_by = NULL,
+                claimed_at = NULL,
+                error_message = %s
+            WHERE product_id = ANY(%s)
+              AND scraping_status = %s
+              AND claimed_by = %s
+            """,
+            (PENDING_STATUS, reason, product_ids, CLAIM_STATUS, resolved_worker_id),
+        )
+        released = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+        if released:
+            print(f"✓ Released {released} unprocessed claimed products back to pending ({reason}).")
+        return released
+    except Exception as e:
+        print(f"Error releasing unprocessed claimed products: {e}")
+        return 0
 
 def reset_error_products_to_pending():
     """Reset all products with 'error' scraping_status to 'pending' to retry them."""
@@ -3018,7 +3079,7 @@ def split_dataframe_to_chunk_files(df, output_dir, total_chunks, prefix):
     return chunk_files
 
 
-def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', worker_id=None, ttl_minutes=60):
+def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', worker_id=None, ttl_minutes=60, max_runtime_seconds=None):
     """Process a chunk of products"""
     try:
         if df is None or df.empty:
@@ -3035,6 +3096,7 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', w
         df = df.reset_index(drop=True)
         consecutive_timeouts = 0
         resolved_worker_id = _get_worker_id(worker_id)
+        started_at = time.monotonic()
 
         print(f"Processing {len(df)} products from chunk {chunk_id}")
         
@@ -3042,6 +3104,13 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', w
         product_results = []
         seller_results = []
         remaining_results = []
+
+        def add_remaining_rows(rows_df):
+            for _, r_row in rows_df.iterrows():
+                remaining_results.append({
+                    col: ('' if pd.isna(r_row[col]) else r_row[col])
+                    for col in df.columns
+                })
         
         # Setup driver with retry
         driver = None
@@ -3051,6 +3120,11 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', w
             print(f"Driver setup failed for chunk {chunk_id}: {str(e)}")
             traceback.print_exc()
             if is_driver_connectivity_error(e):
+                release_claimed_products(
+                    df['product_id'].tolist(),
+                    resolved_worker_id,
+                    reason="driver_setup_failed",
+                )
                 remaining_path, remaining_rows = save_remaining_df(
                     df, chunk_id, round_id, output_dir, reason="driver_setup_failed"
                 )
@@ -3068,6 +3142,17 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', w
         try:
             # Process each product
             for index, row in df.iterrows():
+                if max_runtime_seconds and (time.monotonic() - started_at) >= max_runtime_seconds:
+                    print(f"!!! MAX RUNTIME REACHED before Product {row['product_id']}. Releasing remaining {len(df) - index} products.")
+                    remaining_df_part = df.iloc[index:]
+                    add_remaining_rows(remaining_df_part)
+                    release_claimed_products(
+                        remaining_df_part['product_id'].tolist(),
+                        resolved_worker_id,
+                        reason="max_runtime_reached",
+                    )
+                    break
+
                 product_id = row['product_id']
                 web_id = row['web_id']
                 keyword = row['keyword']
@@ -3144,23 +3229,25 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', w
 
                 if status_lower == 'captcha_failed':
                     print(f"!!! CAPTCHA DETECTED on Product {product_id}. Skipping remaining {len(df) - index} products in this chunk to avoid further blocks.")
-                    # Add current product and all subsequent products in the chunk to remaining_results
+                    # Save current product and all subsequent products to the remaining CSV.
                     remaining_df_part = df.iloc[index:]
-                    for _, r_row in remaining_df_part.iterrows():
-                        remaining_results.append({
-                            col: ('' if pd.isna(r_row[col]) else r_row[col])
-                            for col in df.columns
-                        })
+                    add_remaining_rows(remaining_df_part)
+                    release_claimed_products(
+                        df.iloc[index + 1:]['product_id'].tolist(),
+                        resolved_worker_id,
+                        reason="captcha_failed",
+                    )
                     break  # Stop processing this chunk
                 elif consecutive_timeouts >= 2:
                     print(f"!!! TIMEOUT PERSISTS ({consecutive_timeouts} consecutive timeouts) on Product {product_id}. Skipping remaining {len(df) - index} products in this chunk.")
-                    # Add current product and all subsequent products in the chunk to remaining_results
+                    # Save current product and all subsequent products to the remaining CSV.
                     remaining_df_part = df.iloc[index:]
-                    for _, r_row in remaining_df_part.iterrows():
-                        remaining_results.append({
-                            col: ('' if pd.isna(r_row[col]) else r_row[col])
-                            for col in df.columns
-                        })
+                    add_remaining_rows(remaining_df_part)
+                    release_claimed_products(
+                        df.iloc[index + 1:]['product_id'].tolist(),
+                        resolved_worker_id,
+                        reason="consecutive_timeouts",
+                    )
                     break  # Stop processing this chunk
                 elif status_lower in ['error', 'timeout_error']:
                     remaining_row = {
@@ -3297,6 +3384,11 @@ def process_chunk(df, chunk_id, total_chunks, round_id=1, output_dir='output', w
         print(f"Error processing chunk {chunk_id}: {str(e)}")
         traceback.print_exc()
         if df is not None and is_driver_connectivity_error(e):
+            release_claimed_products(
+                df['product_id'].tolist(),
+                worker_id,
+                reason="driver_connectivity_error",
+            )
             remaining_path, remaining_rows = save_remaining_df(
                 df, chunk_id, round_id, output_dir, reason="driver_connectivity_error"
             )
@@ -3331,12 +3423,26 @@ def main():
     parser.add_argument('--max-rounds', type=int, default=10, help='Maximum recursive rounds')
     parser.add_argument('--reset-errors', action='store_true', help='Reset all error products to pending and exit')
     parser.add_argument('--export-report', type=str, required=False, default=None, help='Generate reconciliation report CSV at specified path and exit')
-    parser.add_argument('--claim-mode', action='store_true', help='Use DB claiming queue (recommended for parallel accounts)')
-    parser.add_argument('--claim-limit', type=int, default=int(os.environ.get("CLAIM_LIMIT", "30")), help='How many products to claim and scrape')
-    parser.add_argument('--claim-ttl-minutes', type=int, default=int(os.environ.get("CLAIM_TTL_MINUTES", "60")), help='Release claims older than this TTL')
+    parser.add_argument('--claim-mode', action='store_true', help='Deprecated; DB claiming is the default unless --offset-mode is used')
+    parser.add_argument('--offset-mode', action='store_true', help='Use legacy LIMIT/OFFSET chunking instead of DB claiming')
+    parser.add_argument('--claim-limit', type=int, default=_env_int("CLAIM_LIMIT", None), help='How many products to claim and scrape; defaults to products/hour * runtime hours')
+    parser.add_argument('--products-per-hour', type=int, default=_env_int("PRODUCTS_PER_HOUR", DEFAULT_PRODUCTS_PER_HOUR), help='Expected scrape rate used to size each worker claim')
+    parser.add_argument('--max-runtime-hours', type=float, default=_env_float("MAX_RUNTIME_HOURS", DEFAULT_MAX_RUNTIME_HOURS), help='Maximum hours this worker should process')
+    parser.add_argument('--claim-ttl-minutes', type=int, default=_env_int("CLAIM_TTL_MINUTES", None), help='Release claims older than this TTL')
     parser.add_argument('--worker-id', type=str, default=os.environ.get("SCRAPER_WORKER_ID", None), help='Worker identifier stored in DB claims')
     
     args = parser.parse_args()
+    args.claim_limit = int(args.claim_limit) if args.claim_limit is not None else None
+    if args.claim_ttl_minutes is None:
+        args.claim_ttl_minutes = max(DEFAULT_CLAIM_TTL_MINUTES, int(math.ceil(args.max_runtime_hours * 60)) + 120)
+    else:
+        args.claim_ttl_minutes = int(args.claim_ttl_minutes)
+    effective_claim_limit = calculate_parallel_claim_limit(
+        claim_limit=args.claim_limit,
+        products_per_hour=args.products_per_hour,
+        max_runtime_hours=args.max_runtime_hours,
+    )
+    max_runtime_seconds = int(args.max_runtime_hours * 60 * 60)
     
     # Handlers for dedicated utility commands
     if args.reset_errors:
@@ -3367,17 +3473,30 @@ def main():
 
     print(f"Total pending products in DB: {total_pending}")
 
-    if args.claim_mode:
-        print(f"Claim mode enabled: worker={_get_worker_id(args.worker_id)} limit={args.claim_limit} ttl={args.claim_ttl_minutes}m")
-        chunk_df = claim_pending_products_from_db(limit=args.claim_limit, worker_id=args.worker_id, ttl_minutes=args.claim_ttl_minutes)
+    if not args.offset_mode:
+        print(
+            f"DB claim queue enabled: worker={_get_worker_id(args.worker_id)} "
+            f"limit={effective_claim_limit} ttl={args.claim_ttl_minutes}m "
+            f"runtime={args.max_runtime_hours}h rate={args.products_per_hour}/h"
+        )
+        chunk_df = claim_pending_products_from_db(limit=effective_claim_limit, worker_id=args.worker_id, ttl_minutes=args.claim_ttl_minutes)
         if chunk_df.empty:
             print("No claimable pending products found (or claim columns missing).")
             sys.exit(0)
-        chunk_result = process_chunk(chunk_df, 1, 1, worker_id=args.worker_id, ttl_minutes=args.claim_ttl_minutes)
+        chunk_result = process_chunk(
+            chunk_df,
+            args.chunk_id,
+            args.total_chunks,
+            worker_id=args.worker_id,
+            ttl_minutes=args.claim_ttl_minutes,
+            max_runtime_seconds=max_runtime_seconds,
+        )
         success = chunk_result.get("success", False)
         sys.exit(0 if success else 1)
 
-    # Calculate balanced limit and offset for this chunk
+    # Legacy mode: calculate balanced limit and offset for this chunk.
+    # Prefer the DB claim queue above for parallel scraping; LIMIT/OFFSET is unstable
+    # when many workers update the pending set concurrently.
     chunk_id = int(args.chunk_id)
     total_chunks = int(args.total_chunks)
     
@@ -3402,7 +3521,14 @@ def main():
         print(f"Chunk {args.chunk_id} has no products to process.")
         sys.exit(0)
 
-    chunk_result = process_chunk(chunk_df, args.chunk_id, args.total_chunks, worker_id=args.worker_id, ttl_minutes=args.claim_ttl_minutes)
+    chunk_result = process_chunk(
+        chunk_df,
+        args.chunk_id,
+        args.total_chunks,
+        worker_id=args.worker_id,
+        ttl_minutes=args.claim_ttl_minutes,
+        max_runtime_seconds=max_runtime_seconds,
+    )
     success = chunk_result.get("success", False)
     
     if success:
